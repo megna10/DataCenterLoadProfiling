@@ -42,6 +42,8 @@ def get_target_vmid_table():
 
     return extracted_data
 
+
+
 def get_min_profiles(df_data, interval_min):
 
     # filters for day 1
@@ -57,6 +59,146 @@ def get_min_profiles(df_data, interval_min):
 
     profile.to_csv(f'hourly_cpu_profiles_{interval_min}.csv', index = False)
     return profile
+
+
+def get_vm_sections(max_core_count, num_groups):
+    df = pd.read_csv("interactive_4cores.csv")
+
+    df.columns = ["vm_id", "id2", "id3", "start_time", "stop_time", "max_cpu", "min_cpu", "avg_cpu","workload", "cores", "ram"]
+
+    sections = []
+    current_vm_ids = []
+    current_cores = 0
+    current_ram = 0
+    total_group_count = 0
+
+    for _, row in df.iterrows():
+        cores = row["cores"]
+        ram = row["ram"]
+
+        # start a new section if adding this VM would exceed the limit
+        if current_cores + cores > max_core_count:
+            # each section is a dict inside a list
+            sections.append({
+                "vm_ids": current_vm_ids,
+                "total_cores": current_cores,
+                "total_ram": current_ram,
+                })
+
+            total_group_count += 1
+
+            if total_group_count > num_groups:
+                break
+
+            # reset values
+            current_ram = 0
+            current_cores = 0
+            current_vm_ids = []
+
+
+        # update values
+        current_vm_ids.append(row["vm_id"])
+        current_cores += cores
+        current_ram += ram
+
+    # Add the final section / maybe it doesnt matter for now
+    # if current_vm_ids:
+    #     sections.append({
+    #         "vm_ids": current_vm_ids,
+    #         "total_cores": current_cores,
+    #         "total_ram": current_ram
+    #     })
+
+    return sections
+
+
+def get_avg_cpu_utilizations(sections, start_time, end_time):
+    """
+    sections: list of dictionaries containing groups of vm's
+
+    """
+    # Read the CPU utilization data
+    df = pd.read_csv("target_vm_rows_1_7.csv")
+
+    # Only use timestamps within the requested range
+    df = df[
+        (df["timestamp"] >= start_time) &
+        (df["timestamp"] <= end_time)
+    ]
+
+    # will contain dicts of avg cpus of each section at different timestamps
+    results = []
+
+    # Go through each unique timestamp in order
+    for timestamp in sorted(df["timestamp"].unique()):
+
+        # Get all VM data for this timestamp
+        timestamp_data = df[df["timestamp"] == timestamp]
+
+        # print(f"\nTimestamp: {timestamp}")
+
+        # creates a dict for this timestamp
+        timestamp_result = {
+            "timestamp": timestamp
+        }
+
+        # Go through each section
+        for section_num, section in enumerate(sections, start=1):
+
+            vm_ids = section["vm_ids"]
+
+            # Find the rows for the VMs in this section
+            section_data = timestamp_data[
+                timestamp_data["vm_id"].isin(vm_ids)
+            ]
+
+            # Calculate the average CPU utilization
+            if not section_data.empty:
+                section_avg_cpu = section_data["avg_cpu"].mean()
+            else:
+                section_avg_cpu = None
+
+            # Store the result
+            timestamp_result[f"section_{section_num}_avg_cpu"] = section_avg_cpu
+
+            # # Print result
+            # if section_avg_cpu is not None:
+            #     print(
+            #          f"Timestamp={timestamp}, "
+            #         f"  Section {section_num}: "
+            #         f"Avg CPU = {section_avg_cpu:.2f}, "
+            #         f"Total RAM = {section['total_ram']}"
+            #     )
+            # else:
+            #     print(
+            #         f"  Section {section_num}: "
+            #         f"No CPU data, "
+            #         f"Total RAM = {section['total_ram']}"
+            #     )
+
+        results.append(timestamp_result)
+
+    return pd.DataFrame(results)
+
+def get_overall_avg_cpu(section_results):
+    """
+    Calculate the average CPU utilization across all sections
+    for each timestamp.
+
+    section_results: DataFrame returned by get_avg_cpu_utilizations()
+
+    """
+    # Find all columns containing section CPU averages
+    section_columns = [
+        column for column in section_results.columns if column.startswith("section_") and column.endswith("_avg_cpu")
+    ]
+
+    # Calculate the average across sections for each timestamp
+    section_results["overall_avg_cpu"] = (
+        section_results[section_columns].mean(axis=1)
+    )
+
+    return section_results[["timestamp", "overall_avg_cpu"]]
 
 # ------------- Plotting --------------------------
 
@@ -97,13 +239,37 @@ def plot_profiles(profile_df, interval_num):
     # Display the plot
     plt.show()
 
+def plot_overall_cpu_util_sections(section_results):
+    plt.figure(figsize=(12, 6))
+
+    plt.plot(
+        section_results["timestamp"],
+        section_results["overall_avg_cpu"],
+        linewidth=2,
+        marker="o",
+        markersize=3
+    )
+
+
+    plt.xlabel("Time (seconds)")
+    plt.ylabel("Average CPU Utilization (%)")
+    plt.title("Overall CPU Utilization Over Time")
+
+    plt.grid(True)
+    plt.show()
+
+
 def main():
     """Main execution block where workflow functions are called."""
     # vm_id_table = get_target_vmid_table()
-    time_interval = 10
-    df_input = pd.read_csv('target_vm_rows_1_7.csv')
-    profile_df = get_min_profiles(df_input, time_interval)
-    plot_profiles(profile_df, time_interval)
+    # time_interval = 10
+    # df_input = pd.read_csv('target_vm_rows_1_7.csv')
+    # profile_df = get_min_profiles(df_input, time_interval)
+    # plot_profiles(profile_df, time_interval)
+
+    sects_of_ids = get_vm_sections(32, 10)
+    df = get_avg_cpu_utilizations(sects_of_ids, 0, 86400 )
+    plot_overall_cpu_util_sections(get_overall_avg_cpu(df))
 
 # --- RUN SCRIPT ---
 if __name__ == "__main__":

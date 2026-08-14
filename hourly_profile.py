@@ -267,7 +267,7 @@ def main():
     # profile_df = get_min_profiles(df_input, time_interval)
     # plot_profiles(profile_df, time_interval)
 
-    sects_of_ids = get_vm_sections(32, 10)
+    sects_of_ids = get_vm_sections(64, 10)
     df = get_avg_cpu_utilizations(sects_of_ids, 0, 86400 )
     plot_overall_cpu_util_sections(get_overall_avg_cpu(df))
 

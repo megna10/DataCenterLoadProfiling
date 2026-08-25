@@ -7,7 +7,7 @@ START_TIME = 0
 END_TIME = 86400
 
 def get_target_vmid_table():
-    int_active_vms = pd.read_csv('vmtable_filtered.csv')
+    int_active_vms = pd.read_csv('interactive_4cores.csv')
     # grabs every entry in the first column & converts IDs into a set
     target_vm_ids = set(int_active_vms.iloc[:, 0])
 

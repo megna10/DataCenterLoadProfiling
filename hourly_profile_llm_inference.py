@@ -2,6 +2,8 @@ import pandas as pd
 import numpy as np
 from scipy.optimize import nnls
 from tqdm import tqdm
+import matplotlib.dates as mdates
+import matplotlib.pyplot as plt
 
 INPUT_P33 = 564
 INPUT_P66 = 1960
@@ -374,63 +376,119 @@ def aggregate_into_5min_bins(
 
     return binned_df.set_index("bin_start")
 
+def calculate_power_profile(binned_df, num_servers=16, gpu_model='H100'):
+
+    GPU_SPECS = {
+        'H100': {'P_idle': 1036.0, 'P_peak': 5768.0, 'gpus_per_server': 4},
+        'H200': {'P_idle': 1747.0, 'P_peak': 11011.0, 'gpus_per_server': 8},
+        'L40S': {'P_idle': 579.0, 'P_peak': 2936.0, 'gpus_per_server': 4},
+    }
+
+    spec = GPU_SPECS[gpu_model]
+    total_gpus = num_servers * spec['gpus_per_server']
+
+    # assuming 5 minute intervals/bins
+    max_capacity_seconds = 300.0 * total_gpus
+
+    df = binned_df.copy()
+
+    # computes server utilization with clamp of 100% to prevent overshooting gpu compute capacity
+    df['utilization'] = np.minimum(
+        1.0, df['work_seconds'] / max_capacity_seconds
+    )
+
+    # Linear Power Model (Primary Baseline: alpha = 1.0)
+    p_idle = spec['P_idle']
+    p_dynamic = spec['P_peak'] - spec['P_idle']
+
+    df['power_kw_linear'] = (
+        num_servers * (p_idle + p_dynamic * df['utilization'])
+    ) / 1000.0
+
+    # Sub-Linear Power Model (Sensitivity Check: alpha = 0.8)
+    df['power_kw_sublinear'] = (
+        num_servers * (p_idle + p_dynamic * (df['utilization'] ** 0.8))
+    ) / 1000.0
+
+    return df
+
+def plot_24hr_power_profile(power_df, interval_num=5):
+    """Plots 24-hour electrical power load (kW) and  utilization U(t)
+    at 5-minute interval granularity.
+    """
+    # Ensure dataframe is reset to a clean integer index
+    df = power_df.reset_index(drop=True)
+
+    plt.figure(figsize=(12, 6))
+
+    # Plot the main Linear Power load curve
+    plt.plot(
+        df.index,
+        df['power_kw_linear'],
+        color='#1f77b4',
+        linewidth=2,
+        marker='o',
+        markersize=3,
+        label=f'{interval_num}-Min Linear Power Model',
+    )
+
+    # Format the X-Axis to display time ticks every 2 hours
+    total_bins = (24 * 60) // interval_num  # 288 bins for 5-min intervals
+    bins_per_hour = 60 // interval_num  # 12 bins per hour
+    tick_step = bins_per_hour * 2  # 24 bins per 2-hour step
+
+    tick_intervals = list(range(0, total_bins, tick_step))
+    tick_labels = [f'{(i * interval_num) // 60:02d}:00' for i in tick_intervals]
+
+    plt.xticks(ticks=tick_intervals, labels=tick_labels, rotation=0)
+    plt.xlim(0, total_bins - 1)
+
+    # Axis labels & Title
+    plt.title(
+        f'24-Hour Azure LLM Cluster Power Load Profile ({interval_num}-Minute'
+        ' Resolution)',
+        fontsize=14,
+        pad=15,
+    )
+    plt.xlabel('Time of Day (HH:MM)', fontsize=11, labelpad=10)
+    plt.ylabel('Cluster Electrical Load (kW)', fontsize=11, labelpad=10)
+
+    # Styling details
+    plt.grid(True, linestyle='--', alpha=0.5)
+    plt.legend(loc='upper right')
+    plt.tight_layout()
+
+    # Display the plot
+    plt.show()
+
+
 def main():
     """Main execution block where workflow functions are called."""
+
+    print('1. Loading dataset...')
     dataset = pd.read_csv('AzureLLMInferenceTrace_conv_1week.csv')
 
-# ----------------------rates----------------------------------
-    # request_rates = generate_request_arrival_rate(dataset)
-    # input_rates = generate_input_token_rate(dataset)
-    # output_rates = generate_output_token_rate(dataset)
-
-    # metrics = pd.concat([request_rates, input_rates, output_rates], axis=1).fillna(0)
-    # print(metrics)
-
-# --------------------percentiles-------------------------------
-    # # get bounds for short, medium and large request tokens
-    # input_p33 = dataset['ContextTokens'].quantile(0.33) # 564.0
-    # input_p66 = dataset['ContextTokens'].quantile(0.66) # 1960
-
-    # output_p33 = dataset['GeneratedTokens'].quantile(0.33) #20
-    # output_p66 = dataset['GeneratedTokens'].quantile(0.66) # 60
-
-    # create table of number of tokens created in each request class
-#     dataset['input_class'] = dataset["ContextTokens"].apply(lambda x: classify_length(x, input_P33, input_P66))
-#     dataset["output_class"] = dataset["GeneratedTokens"].apply(lambda x: classify_length(x, output_P33, output_P66))
-
-#     dataset["request_class"] = (dataset['input_class'] + dataset['output_class'])
-# #     print(dataset['request_class'].value_counts())
-# #     print(
-# #     dataset['request_class']
-# #     .value_counts(normalize=True)
-# #     .sort_index()
-# # )
-#     category_stats = dataset.groupby('request_class').agg(
-#         avg_input_tokens=('ContextTokens', 'mean'),
-#         avg_output_tokens=('GeneratedTokens', 'mean'),
-#         request_count=('request_class', 'size')
-#     )
-
-#     category_stats['percentage'] = (
-#         category_stats['request_count'] /
-#         category_stats['request_count'].sum()
-#         * 100
-#     )
-    # print(category_stats)
-
-# ---------------------prefill and decode--------------------------
-    # generate_nnls_H100s()
-    # generate_nnls_L40s()
-    # generate_nnls_H200s()
-
-# ---------------------generating durations--------------------------
-    # Pass raw trace data in, get processed trace data out
+    print('2. Calculating durations for specified...')
     processed_df = calculate_duration(dataset, 'H100')
-    binned_workload = aggregate_into_5min_bins(processed_df, bin_size_minutes=5)
 
-    # Inspect output
-    print(binned_workload.head())
-    # print(processed_df[['start_time', 'duration_sec', 'end_time']].head())
+    print('3. Binning workload into 5-minute intervals...')
+    binned_workload = aggregate_into_5min_bins(
+        processed_df, bin_size_minutes=5, chunk_size=500_000
+    )
+
+    print('4. Computing 24-hour power load profile...(specify num servers)')
+    power_profile = calculate_power_profile(
+        binned_workload, num_servers=100000, gpu_model='H200'
+    )
+
+    print('\n--- 24-Hour Power Load Profile (First 10 Bins) ---')
+    print(power_profile[['work_seconds', 'utilization', 'power_kw_linear']].head(10))
+
+    output_filename = 'azure_h100_power_profile.csv'
+    power_profile.to_csv(output_filename)
+    print(f'\nPipeline completed! Results saved to {output_filename}')
+
+    plot_24hr_power_profile(power_profile, interval_num=5)
 
 # --- RUN SCRIPT ---
 if __name__ == "__main__":

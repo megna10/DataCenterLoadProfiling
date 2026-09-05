@@ -366,15 +366,11 @@ def aggregate_workload(
             work_seconds += np.cumsum(difference[:-1])
 
     # create final dataframe
-    binned_df = pd.DataFrame({
+    return pd.DataFrame({
         "bin_start": bin_starts,
         "bin_end": bin_ends,
-        "work_seconds": work_seconds
+        "work_seconds": work_seconds,
     })
-
-    print("Aggregation complete.")
-
-    return binned_df.set_index("bin_start")
 
 def calculate_server_power(workload_profile, num_servers, selected_deployment):
     """
@@ -400,13 +396,13 @@ def calculate_server_power(workload_profile, num_servers, selected_deployment):
     p_idle = spec["P_idle"]
     p_dynamic = spec["P_peak"] - spec["P_idle"]
 
-    df["power_kW"] = (
-        num_servers *
-        (
-            p_idle +
-            p_dynamic * df["utilization"]
-        )
-        / 1000.0
+    df["server_power_kw"] = (p_idle +
+            p_dynamic * df["utilization"]) / 1000.0
+
+    # Power of entire cluster
+    df["it_power_kw"] = (
+        num_servers
+        * df["server_power_kw"]
     )
 
     return df[
@@ -415,7 +411,8 @@ def calculate_server_power(workload_profile, num_servers, selected_deployment):
             "bin_end",
             "work_seconds",
             "utilization",
-            "power_kW"
+            "server_power_kw",
+            "it_power_kw",
         ]
     ]
 
@@ -427,11 +424,47 @@ def calculate_power_profile(selected_deployment, num_servers, bin_size_minutes=5
     # Convert requests into execution intervals
     processed_df = calculate_duration(dataset, selected_deployment)
 
+    start_time = processed_df["start_time"].min()
+
+    end_time = (
+        start_time
+        + pd.Timedelta(hours=24)
+    )
+
+    # Keep requests that overlap the 24-hour window
+    processed_df = processed_df[
+        (processed_df["start_time"] < end_time)
+        &
+        (processed_df["end_time"] > start_time)
+    ].copy()
+
     # Aggregate request workload
     workload_profile = aggregate_workload(processed_df, bin_size_minutes=bin_size_minutes)
 
     power_profile = calculate_server_power(workload_profile, num_servers, selected_deployment )
-    return power_profile
+
+    power_profile["timestamp"] = (
+        power_profile["bin_start"]
+    )
+
+    power_profile["hour"] = (
+        (
+            power_profile["timestamp"]
+            - power_profile["timestamp"].min()
+        ).dt.total_seconds()
+        / 3600.0
+    )
+
+    return power_profile[
+        [
+            "timestamp",
+            "hour",
+            "work_seconds",
+            "utilization",
+            "server_power_kw",
+            "it_power_kw"
+        ]
+    ]
 
 def plot_24hr_power_profile(power_df, interval_num=5):
     """Plots 24-hour electrical power load (kW) and  utilization U(t)

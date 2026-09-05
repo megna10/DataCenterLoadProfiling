@@ -3,8 +3,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # time in seconds modeling one day
-START_TIME = 0
-END_TIME = 86400
+START_TIME = 86400
+END_TIME = 172800
+
+SERVER_CONFIGS = {"Standard": {"P_idle": 307, "P_peak": 1133, "num_cpu": 2, "total_max_cores": 64},
+                  "Dense": {"P_idle": 345, "P_peak": 1376, "num_cpu": 2, "total_max_cores": 128}
+                  }
 
 def get_target_vmid_table():
     int_active_vms = pd.read_csv('interactive_4cores.csv')
@@ -200,6 +204,43 @@ def get_overall_avg_cpu(section_results):
 
     return section_results[["timestamp", "overall_avg_cpu"]]
 
+def calculate_server_power(cpu_profile, num_servers, deployment):
+    """
+    converts cpu utilization into total server IT power
+    """
+
+    spec = SERVER_CONFIGS[deployment]
+    df = cpu_profile.copy()
+
+    # convert cpu utilization from percentage into a fraction
+    df["utilization"] = df["overall_avg_cpu"] / 100.0
+
+    # prevent utilization from going below 0 percent or above 100
+    df["utilization"] = df["utilization"].clip(0.0, 1.0)
+
+    # linear server power model
+    p_idle = spec["P_idle"]
+    p_dynamic = spec["P_peak"] - spec["P_idle"]
+
+    df["power_kW"] = (num_servers * ( p_idle + p_dynamic * df["utilization"]) / 1000.0)
+
+    return df[["timestamp", "utilization", "power_kW"]]
+
+def calculate_power_profile(selected_deployment, num_servers):
+    deployment = SERVER_CONFIGS[selected_deployment]
+
+    # get vm workload
+    sects_of_ids = get_vm_sections(deployment["total_max_cores"], 20)
+
+    cpu_profile = get_avg_cpu_utilizations(sects_of_ids, START_TIME, END_TIME)
+    # aggregate sections
+    cpu_profile = get_overall_avg_cpu(cpu_profile)
+
+    power_profile = calculate_server_power(cpu_profile, num_servers, selected_deployment)
+
+    return power_profile
+
+
 # ------------- Plotting --------------------------
 
 def plot_profiles(profile_df, interval_num):
@@ -267,9 +308,11 @@ def main():
     # profile_df = get_min_profiles(df_input, time_interval)
     # plot_profiles(profile_df, time_interval)
 
-    sects_of_ids = get_vm_sections(64, 10)
-    df = get_avg_cpu_utilizations(sects_of_ids, 0, 86400 )
-    plot_overall_cpu_util_sections(get_overall_avg_cpu(df))
+    # sects_of_ids = get_vm_sections(64, 10)
+    # df = get_avg_cpu_utilizations(sects_of_ids, 0, 86400 )
+    # plot_overall_cpu_util_sections(get_overall_avg_cpu(df))
+
+    calculate_power_profile("Standard", 10)
 
 # --- RUN SCRIPT ---
 if __name__ == "__main__":

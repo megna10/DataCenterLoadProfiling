@@ -5,58 +5,114 @@ import matplotlib.pyplot as plt
 
 
 #defines  hardware configs (Adjust idle/peak Watts anytime)
-HARDWARE_TIERS = {
+SERVER_CONFIG = {
     'Standard': {
         'cores_per_node': 32,
-        'p_idle': 199.0,  # Watts
-        'p_peak': 834.0,  # Watts
+        'P_idle': 199.0,  # Watts
+        'P_peak': 834.0,  # Watts
     },
     'Dense': {
         'cores_per_node': 128,
-        'p_idle': 431.0,
-        'p_peak': 1793.0,
+        'P_idle': 431.0,
+        'P_peak': 1793.0,
     },
     'Extreme': {
         'cores_per_node': 256,
-        'p_idle': 579.0,
-        'p_peak': 2340.0,
+        'P_idle': 579.0,
+        'P_peak': 2340.0,
     },
 }
 
+def calculate_server_power(workload_profile, num_servers, selected_deployment):
+    """
+    Converts compute utilization into total server IT power.
 
-def simulate_cluster_power(
-    data, config_key, num_servers=100, bin_seconds=300
-):
+    workload_profile must contain:
+        - timestamp
+        - utilization
+    """
+    spec = SERVER_CONFIG[selected_deployment]
+    df = workload_profile.copy()
 
-    server_config = HARDWARE_TIERS[config_key]
-    results = data.copy()
+    # Server power parameters
+    p_idle = spec["P_idle"]
+    p_dynamic = spec["P_peak"] - spec["P_idle"]
 
-    # gets max execution capacity in core-seconds in one server
-    node_capacity_sec = server_config['cores_per_node'] * bin_seconds
+    # Calculate power of one server
+    df["server_power_kw"] = (
+        p_idle
+        + p_dynamic * df["utilization"]
+    ) / 1000.0
 
-    # Total Cluster Capacity (N * Capacity_unit)
-    total_cluster_capacity_sec = num_servers * node_capacity_sec
-
-    # Utilization = min(100%, Workload in seconds/ Capacity_Total)
-    results['utilization_pct'] = np.minimum(
-        100.0,
-        (results['total_work_core_seconds'] / total_cluster_capacity_sec) * 100.0,
+    # Calculate total cluster power
+    df["it_power_kw"] = (
+        num_servers * df["server_power_kw"]
     )
 
-    # Per-Node Power Draw (Watts)
-    u_frac = results['utilization_pct'] / 100.0
-    p_dynamic = server_config['p_peak'] - server_config['p_idle']
-    node_power_w = server_config['p_idle'] + (p_dynamic * u_frac)
 
-    # Total Cluster Electrical Power (kW) = N * Node_Power / 1000
-    results['cluster_power_kw'] = (num_servers * node_power_w) / 1000.0
+    return df[
+    [
+        "timestamp",
+        "utilization",
+        "server_power_kw",
+        "it_power_kw",
+    ]
+]
 
-    # Map time axis to Hours (0.0 to 24.0)
-    start_offset = results['bin_start_sec'].min()
+def calculate_power_profile(selected_deployment, num_servers=100):
 
-    results['hour_of_day'] = (results['bin_start_sec'] - start_offset) / 3600.0
+    data = pd.read_csv("analytic_data_2.csv").copy()
 
-    return results
+    spec = SERVER_CONFIG[selected_deployment]
+
+    bin_seconds = 300
+    # gets max execution capacity in core-seconds in one server
+    server_capacity_sec = spec['cores_per_node'] * bin_seconds
+
+    # Total Cluster Capacity (N * Capacity_unit)
+    total_cluster_capacity_sec = num_servers * server_capacity_sec
+
+    # Utilization = min(100%, Workload in seconds/ Capacity_Total)
+
+    data["utilization"] = (
+        data["total_work_core_seconds"]
+        / total_cluster_capacity_sec
+    )
+
+    # Prevent utilization from exceeding 100%
+    data["utilization"] = data["utilization"].clip(
+        0.0,
+        1.0
+    )
+
+    power_profile = calculate_server_power(
+        data[[
+                "bin_start_sec",
+                "utilization",
+            ]].rename(
+            columns={
+                "bin_start_sec": "timestamp"
+            }
+        ),
+        num_servers,
+        selected_deployment,
+    )
+
+    # Add time information back
+    power_profile["hour"] = (
+        power_profile["timestamp"]
+        - power_profile["timestamp"].min()
+    ) / 3600.0
+
+    return power_profile[
+        [
+            "timestamp",
+            "hour",
+            "utilization",
+            "server_power_kw",
+            "it_power_kw",
+        ]
+    ]
 
 def plot_power_profile(sim_results):
 
@@ -84,10 +140,7 @@ def main():
     """Main execution block where workflow functions are called."""
 
     # loads bigquery import
-    df = pd.read_csv('analytic_data_2.csv')
-
-    sim_results = simulate_cluster_power(df, config_key='Dense', num_servers=100)
-    plot_power_profile(sim_results)
+    calculate_power_profile(selected_deployment="Standard", num_servers=100)
 
 
 if __name__ == "__main__":

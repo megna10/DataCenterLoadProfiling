@@ -4,20 +4,20 @@ import os
 import matplotlib.pyplot as plt
 
 # Storage Server Configurations (Full System Specs)
-STORAGE_TIERS = {
-    'Standard_Storage': {
+SERVER_CONFIGS = {
+    'Standard': {
         'max_iops': 16200000,  # Peak system IOPS rating
         'p_idle': 213,     # Total system Idle Watts
         'p_peak': 724,     # Total system Peak Watts
         'num_drives': 12,
     },
-    'Dense_Storage': {
+    'Dense': {
         'max_iops': 17232,
         'p_idle': 526,
         'p_peak': 1707.0,
         'num_drives': 24,
     },
-    'Extreme_Storage': {
+    'Extremes': {
         'max_iops': 32400000,
         'p_idle': 560,
         'p_peak': 2279,
@@ -141,32 +141,97 @@ def get_24hr_profile(load):
 
     return profiles
 
-def calculate_power_profile(profile, tier_key='Dense_Storage', num_servers=10):
+def calculate_server_power(profile, selected_deployment, num_servers):
+    """
+    Converts storage workload into total storage server IT power.
+    """
+    spec = SERVER_CONFIGS[selected_deployment]
 
-    cfg = STORAGE_TIERS[tier_key]
+    df = profile.copy()
 
     # calcualte the workload of one server
-    profile["server_IOPS"] = (profile["avg_disk_IOPS"] * cfg["num_drives"])
+    df["server_IOPS"] = (df["avg_disk_IOPS"] * spec["num_drives"])
 
-    # Calculate utilization as a fraction.
-    profile["utilization"] = (profile["server_IOPS"] / cfg["max_iops"])
+    # convert iops into utilization.
+    df["utilization"] = (df["server_IOPS"] / spec["max_iops"])
 
-     # Prevent utilization from exceeding 100%.
-    profile["utilization"] = np.minimum(profile["utilization"], 1.0)
+    # Prevent utilization from exceeding 100%.
+    df["utilization"] = df["utilization"] = df["utilization"].clip(0.0, 1.0)
 
-    # Calculate the dynamic portion of power.
-    dynamic_power = (cfg["p_peak"] - cfg["p_idle"])
+    # Linear server power model.
+    p_idle = spec["p_idle"]
+    p_dynamic = spec["p_peak"] - spec["p_idle"]
 
-    # Calculate server power at each 5-minute interval.
-    profile["server_power_W"] = ( cfg["p_idle"] + dynamic_power * profile["utilization"])
+    df["server_power_kW"] = (
+        p_idle +
+        p_dynamic * df["utilization"]
+    ) / 1000.0
 
-    # Calculate power in kW.
-    profile["server_power_kW"] = (
-        (profile["server_power_W"] * num_servers )/ 1000
+    # Total power for all servers.
+    df["it_power_kW"] = (
+        df["server_power_kW"] * num_servers
     )
 
+    return df[
+        [
+            "interval",
+            "avg_disk_IOPS",
+            "utilization",
+            "server_power_kw",
+            "power_kw"
+        ]
+    ]
 
-    return profile
+
+def calculate_power_profile( selected_deployment, num_servers, sample_size=100, random_state=42):
+    """
+    Complete storage workload-to-power pipeline.
+    """
+     # Load selected storage disks.
+    data_disks_attr1 = pd.read_csv(
+        "storage_files/data_disks_att1.csv"
+    )
+
+    # Sample disks and load their IOPS traces.
+    load = get_load_sample_data(
+        data_disks_attr1,
+        sample_size=sample_size,
+        random_state=random_state
+    )
+
+    # Create 24-hour profile for each disk.
+    profiles = get_24hr_profile(load)
+
+    # Create representative workload.
+    representative = create_representative_profile(profiles)
+
+    # Convert workload into server power.
+    power_profile = calculate_server_power(
+        representative,
+        selected_deployment,
+        num_servers
+    )
+
+    result = power_profile.copy()
+
+    result["hour"] = (
+        result["interval"] * 5
+    ) / 60.0
+
+    # --------------------------------------------------------
+    # Standardized output
+    # --------------------------------------------------------
+
+    return result[
+        [
+            "interval",
+            "hour",
+            "avg_disk_IOPS",
+            "utilization",
+            "server_power_kw",
+            "it_power_kw",
+        ]
+    ]
 
 def create_representative_profile(profiles):
     """calculate the avg IOPs across all sampled disks for 24hr profile for each 5 min interval"""
@@ -218,17 +283,19 @@ def main():
     # # show what disk types occur in disk attributes
     # print(df.groupby("disk_attr")["disk_type"].value_counts())
 
-    data_disks_attr1 = pd.read_csv("storage_files/data_disks_att1.csv")
-    load = get_load_sample_data(data_disks_attr1, 100, 42)
+    # data_disks_attr1 = pd.read_csv("storage_files/data_disks_att1.csv")
+    # load = get_load_sample_data(data_disks_attr1, 100, 42)
 
-    # create a 24 hour, 5 min profile for each disk
-    profiles = get_24hr_profile(load)
+    # # create a 24 hour, 5 min profile for each disk
+    # profiles = get_24hr_profile(load)
 
-    # Create the representative workload across the disks.
-    representative = create_representative_profile(profiles)
-    pro = calculate_power_profile(representative, 'Standard_Storage', 10)
+    # # Create the representative workload across the disks.
+    # representative = create_representative_profile(profiles)
+    # pro = calculate_power_profile(representative, 'Standard_Storage', 10)
 
-    plot_profile(pro)
+    # plot_profile(pro)
+
+    calculate_power_profile("Standard", 10, 100, 42 )
 
 
 if __name__ == "__main__":

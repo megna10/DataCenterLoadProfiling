@@ -141,7 +141,7 @@ def get_24hr_profile(load):
 
     return profiles
 
-def simulate_storage_power(profile, tier_key='Dense_Storage', num_servers=10):
+def calculate_power_profile(profile, tier_key='Dense_Storage', num_servers=10):
 
     cfg = STORAGE_TIERS[tier_key]
 
@@ -226,7 +226,7 @@ def main():
 
     # Create the representative workload across the disks.
     representative = create_representative_profile(profiles)
-    pro = simulate_storage_power(representative, 'Standard_Storage', 10)
+    pro = calculate_power_profile(representative, 'Standard_Storage', 10)
 
     plot_profile(pro)
 

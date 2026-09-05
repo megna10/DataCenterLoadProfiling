@@ -11,11 +11,12 @@ INPUT_P66 = 1960
 OUTPUT_P33 = 20
 OUTPUT_P66 = 60
 
-HARDWARE_RATES = {
-    'L40S': {'R_prefill': 152.05, 'R_decode': float('inf')},
-    'H100': {'R_prefill':  987.00, 'R_decode': 808.40 },
-    'H200': {'R_prefill': 1792.36, 'R_decode': float('inf')}
-}
+SERVER_CONFIGS = {
+
+        "Standard": {'P_idle': 579.0, 'P_peak': 2936.0, 'gpus_per_server': 4, "R_prefill": 152.05, "R_decode": float("inf")},
+        'Dense': {'P_idle': 1036.0, 'P_peak': 5768.0, 'gpus_per_server': 4, "R_prefill": 987 , "R_decode": float("inf")},
+        'Extreme': {'P_idle': 1747.0, 'P_peak': 11011.0, 'gpus_per_server': 8, "R_prefill": 1792.26, "R_decode": float("inf")},
+    }
 
 def _prepare_dataframe(data):
 
@@ -175,16 +176,16 @@ def generate_nnls_H200s():
     print(f"R_prefill = {R_prefill:.2f} tokens/sec")
     print(f"R_decode  = {R_decode:.2f} tokens/sec")
 
-def calculate_duration(data, selected_GPU):
+def calculate_duration(data, selected_deployment):
     # gets r_prefill and r_decode for specific gpu
-    rates = HARDWARE_RATES[selected_GPU]
+    spec = SERVER_CONFIGS[selected_deployment]
 
     df = _prepare_dataframe(data)
     df['start_time'] = df['TIMESTAMP']
 
     # Compute durations (Output / inf = 0.0)
-    df['prefill_time_sec'] = df['ContextTokens'] / rates['R_prefill']
-    df['decode_time_sec']  = df['GeneratedTokens'] / rates['R_decode']
+    df['prefill_time_sec'] = df['ContextTokens'] / spec['R_prefill']
+    df['decode_time_sec']  = df['GeneratedTokens'] / spec['R_decode']
     df['duration_sec']     = df['prefill_time_sec'] + df['decode_time_sec']
 
     df['end_time'] = df['start_time'] + pd.to_timedelta(df['duration_sec'], unit='s')
@@ -192,8 +193,7 @@ def calculate_duration(data, selected_GPU):
     return df
 
 
-
-def aggregate_into_5min_bins(
+def aggregate_workload(
     processed_df,
     bin_size_minutes=5,
     chunk_size=500_000
@@ -376,41 +376,62 @@ def aggregate_into_5min_bins(
 
     return binned_df.set_index("bin_start")
 
-def calculate_power_profile(binned_df, num_servers=16, gpu_model='H100'):
+def calculate_server_power(workload_profile, num_servers, selected_deployment):
+    """
+    Converts GPU workload utilization into total GPU server IT power.
+    """
 
-    GPU_SPECS = {
-        'H100': {'P_idle': 1036.0, 'P_peak': 5768.0, 'gpus_per_server': 4},
-        'H200': {'P_idle': 1747.0, 'P_peak': 11011.0, 'gpus_per_server': 8},
-        'L40S': {'P_idle': 579.0, 'P_peak': 2936.0, 'gpus_per_server': 4},
-    }
+    spec = SERVER_CONFIGS[selected_deployment]
+    df = workload_profile.copy()
 
-    spec = GPU_SPECS[gpu_model]
-    total_gpus = num_servers * spec['gpus_per_server']
+    total_gpus = num_servers * spec["gpus_per_server"]
 
-    # assuming 5 minute intervals/bins
-    max_capacity_seconds = 300.0 * total_gpus
+    bin_seconds = (df["bin_end"] - df["bin_start"]).dt.total_seconds()
 
-    df = binned_df.copy()
+    max_capacity_seconds = (bin_seconds * total_gpus)
 
-    # computes server utilization with clamp of 100% to prevent overshooting gpu compute capacity
-    df['utilization'] = np.minimum(
-        1.0, df['work_seconds'] / max_capacity_seconds
+    # Convert workload into GPU utilization
+    df["utilization"] = (df["work_seconds"] / max_capacity_seconds)
+
+    # Prevent utilization from going below 0% or above 100%
+    df["utilization"] = df["utilization"].clip(0.0, 1.0)
+
+    # Linear power model
+    p_idle = spec["P_idle"]
+    p_dynamic = spec["P_peak"] - spec["P_idle"]
+
+    df["power_kW"] = (
+        num_servers *
+        (
+            p_idle +
+            p_dynamic * df["utilization"]
+        )
+        / 1000.0
     )
 
-    # Linear Power Model (Primary Baseline: alpha = 1.0)
-    p_idle = spec['P_idle']
-    p_dynamic = spec['P_peak'] - spec['P_idle']
+    return df[
+        [
+            "bin_start",
+            "bin_end",
+            "work_seconds",
+            "utilization",
+            "power_kW"
+        ]
+    ]
 
-    df['power_kw_linear'] = (
-        num_servers * (p_idle + p_dynamic * df['utilization'])
-    ) / 1000.0
+def calculate_power_profile(selected_deployment, num_servers, bin_size_minutes=5):
 
-    # Sub-Linear Power Model (Sensitivity Check: alpha = 0.8)
-    df['power_kw_sublinear'] = (
-        num_servers * (p_idle + p_dynamic * (df['utilization'] ** 0.8))
-    ) / 1000.0
+    # Load LLM workload
+    dataset = pd.read_csv("AzureLLMInferenceTrace_conv_1week.csv")
 
-    return df
+    # Convert requests into execution intervals
+    processed_df = calculate_duration(dataset, selected_deployment)
+
+    # Aggregate request workload
+    workload_profile = aggregate_workload(processed_df, bin_size_minutes=bin_size_minutes)
+
+    power_profile = calculate_server_power(workload_profile, num_servers, selected_deployment )
+    return power_profile
 
 def plot_24hr_power_profile(power_df, interval_num=5):
     """Plots 24-hour electrical power load (kW) and  utilization U(t)
@@ -465,30 +486,32 @@ def plot_24hr_power_profile(power_df, interval_num=5):
 def main():
     """Main execution block where workflow functions are called."""
 
-    print('1. Loading dataset...')
-    dataset = pd.read_csv('AzureLLMInferenceTrace_conv_1week.csv')
+    # print('1. Loading dataset...')
+    # dataset = pd.read_csv('AzureLLMInferenceTrace_conv_1week.csv')
 
-    print('2. Calculating durations for specified...')
-    processed_df = calculate_duration(dataset, 'H100')
+    # print('2. Calculating durations for specified...')
+    # processed_df = calculate_duration(dataset, 'H100')
 
-    print('3. Binning workload into 5-minute intervals...')
-    binned_workload = aggregate_into_5min_bins(
-        processed_df, bin_size_minutes=5, chunk_size=500_000
-    )
+    # print('3. Binning workload into 5-minute intervals...')
+    # binned_workload = aggregate_workload(
+    #     processed_df, bin_size_minutes=5, chunk_size=500_000
+    # )
 
-    print('4. Computing 24-hour power load profile...(specify num servers)')
-    power_profile = calculate_power_profile(
-        binned_workload, num_servers=100000, gpu_model='H200'
-    )
+    # print('4. Computing 24-hour power load profile...(specify num servers)')
+    # power_profile = calculate_power_profile(
+    #     binned_workload, num_servers=100000, gpu_model='H200'
+    # )
 
-    print('\n--- 24-Hour Power Load Profile (First 10 Bins) ---')
-    print(power_profile[['work_seconds', 'utilization', 'power_kw_linear']].head(10))
+    # print('\n--- 24-Hour Power Load Profile (First 10 Bins) ---')
+    # print(power_profile[['work_seconds', 'utilization', 'power_kw_linear']].head(10))
 
-    output_filename = 'azure_h100_power_profile.csv'
-    power_profile.to_csv(output_filename)
-    print(f'\nPipeline completed! Results saved to {output_filename}')
+    # output_filename = 'azure_h100_power_profile.csv'
+    # power_profile.to_csv(output_filename)
+    # print(f'\nPipeline completed! Results saved to {output_filename}')
 
-    plot_24hr_power_profile(power_profile, interval_num=5)
+    # plot_24hr_power_profile(power_profile, interval_num=5)
+
+    calculate_power_profile("Standard", num_servers=10, bin_size_minutes=5)
 
 # --- RUN SCRIPT ---
 if __name__ == "__main__":

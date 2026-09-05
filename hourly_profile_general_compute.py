@@ -222,9 +222,12 @@ def calculate_server_power(cpu_profile, num_servers, deployment):
     p_idle = spec["P_idle"]
     p_dynamic = spec["P_peak"] - spec["P_idle"]
 
-    df["power_kW"] = (num_servers * ( p_idle + p_dynamic * df["utilization"]) / 1000.0)
+    df["server_power_kw"] = ( p_idle + p_dynamic * df["utilization"]) / 1000.0
 
-    return df[["timestamp", "utilization", "power_kW"]]
+    # Total cluster power
+    df["it_power_kw"] = (num_servers * df["server_power_kw"])
+
+    return df[["timestamp", "utilization", "server_power_kw", "it_power_kw"]]
 
 def calculate_power_profile(selected_deployment, num_servers):
     deployment = SERVER_CONFIGS[selected_deployment]
@@ -238,7 +241,22 @@ def calculate_power_profile(selected_deployment, num_servers):
 
     power_profile = calculate_server_power(cpu_profile, num_servers, selected_deployment)
 
-    return power_profile
+    result = power_profile.copy()
+
+    result["hour"] = (
+        result["timestamp"]
+        - result["timestamp"].min()
+    ) / 3600.0
+
+    return result[
+        [
+            "timestamp",
+            "hour",
+            "utilization",
+            "server_power_kw",
+            "it_power_kw",
+        ]
+    ]
 
 
 # ------------- Plotting --------------------------

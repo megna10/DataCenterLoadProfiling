@@ -60,7 +60,7 @@ def get_load_sample_data(data, sample_size=300, random_state=42):
 
     # randomly select 300 disks from the filtered disk attr dataset
     sample_disks = data.sample(n=sample_size, random_state=random_state)
-    load_dir = "disk_load_data"
+    load_dir = "storage_files/disk_load_data"
 
     # stores each disk's load data
     all_loads = []

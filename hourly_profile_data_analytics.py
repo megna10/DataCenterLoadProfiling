@@ -39,70 +39,41 @@ def calculate_server_power(workload_profile, num_servers, selected_deployment):
     p_dynamic = spec["P_peak"] - spec["P_idle"]
 
     # Calculate power of one server
-    df["server_power_kw"] = (
-        p_idle
-        + p_dynamic * df["utilization"]
-    ) / 1000.0
+    df["server_power_kw"] = (p_idle+ p_dynamic * df["utilization"]) / 1000.0
 
     # Calculate total cluster power
-    df["it_power_kw"] = (
-        num_servers * df["server_power_kw"]
-    )
+    df["it_power_kw"] = (num_servers * df["server_power_kw"])
 
 
     return df[
     [
         "timestamp",
+        "hour",
         "utilization",
         "server_power_kw",
         "it_power_kw",
     ]
 ]
 
-def calculate_power_profile(selected_deployment, num_servers=100):
+def calculate_power_profile(selected_deployment, num_servers=100, target_peak_util=.8):
 
     data = pd.read_csv("analytic_data_2.csv").copy()
 
-    spec = SERVER_CONFIG[selected_deployment]
+    # finds maxiumum workload demand in the dataset
+    peak_trace_work = data["total_work_core_seconds"].max()
 
-    bin_seconds = 300
-    # gets max execution capacity in core-seconds in one server
-    server_capacity_sec = spec['cores_per_node'] * bin_seconds
+    data["relative_activity"] = data["total_work_core_seconds"] / peak_trace_work
 
-    # Total Cluster Capacity (N * Capacity_unit)
-    total_cluster_capacity_sec = num_servers * server_capacity_sec
+    data["utilization"] = (data["relative_activity"] * target_peak_util).clip(0.0, 1.0)
 
-    # Utilization = min(100%, Workload in seconds/ Capacity_Total)
-
-    data["utilization"] = (
-        data["total_work_core_seconds"]
-        / total_cluster_capacity_sec
-    )
-
-    # Prevent utilization from exceeding 100%
-    data["utilization"] = data["utilization"].clip(
-        0.0,
-        1.0
-    )
+    data["timestamp"] = data["bin_start_sec"]
+    data["hour"] = (data["timestamp"] - data["timestamp"].min()) / 3600.0
 
     power_profile = calculate_server_power(
-        data[[
-                "bin_start_sec",
-                "utilization",
-            ]].rename(
-            columns={
-                "bin_start_sec": "timestamp"
-            }
-        ),
-        num_servers,
-        selected_deployment,
-    )
-
-    # Add time information back
-    power_profile["hour"] = (
-        power_profile["timestamp"]
-        - power_profile["timestamp"].min()
-    ) / 3600.0
+            data[["timestamp", "hour", "utilization"]],
+            num_servers,
+            selected_deployment
+        )
 
     return power_profile[
         [
@@ -140,7 +111,7 @@ def main():
     """Main execution block where workflow functions are called."""
 
     # loads bigquery import
-    calculate_power_profile(selected_deployment="Standard", num_servers=100)
+    calculate_power_profile(selected_deployment="Standard", num_servers=100, target_peak_util=.8)
 
 
 if __name__ == "__main__":

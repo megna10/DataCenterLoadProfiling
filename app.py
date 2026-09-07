@@ -8,11 +8,15 @@ from hourly_profile_general_compute import calculate_power_profile as calculate_
 from hourly_profile_storage import calculate_power_profile as calculate_storage_power
 from hourly_profile_llm_inference import calculate_power_profile as calculate_llm_power
 from hourly_profile_data_analytics import calculate_power_profile as calculate_analytics_power
+from hourly_profile_llm_training import calculate_power_profile as calculate_llm_training_power
+
+
 POWER_MODELS = {
     'compute': calculate_compute_power,
     'storage': calculate_storage_power,
     'inference': calculate_llm_power,
-    'analytics': calculate_analytics_power
+    'analytics': calculate_analytics_power,
+    'training': calculate_llm_training_power
 }
 # ==========================================
 # 1. PAGE & STYLING CONFIGURATION
@@ -56,7 +60,7 @@ DATACENTER_TREE = {
             'Dense':{'power_model': 'analytics', 'default_pue': 1.38},
         },
         'AI Training': {
-            'Standard': {'trace_type': 'synthetic_burst', 'default_pue': 1.28},
+            'Standard': {"power_model": "training", 'default_pue': 1.28},
         },
         'AI Inference': {
             "Standard": {
@@ -84,10 +88,9 @@ DATACENTER_TREE = {
             'Extreme': {'power_model': 'analytics', 'default_pue': 1.38},
         },
         'AI Training': {
-            'Standard': {'trace_type': 'synthetic_burst',
-            'default_pue': 1.20},
-            'Dense': {'trace_type': 'synthetic_burst', 'default_pue': 1.18},
-            'Extreme': {'trace_type': 'synthetic_burst', 'default_pue': 1.15},
+            'Standard': {"power_model": "training", 'default_pue': 1.28},
+            'Dense': {"power_model": "training", 'default_pue': 1.28},
+            'Extreme': {"power_model": "training", 'default_pue': 1.28},
         },
         'AI Inference': {
             "Standard": {
@@ -108,9 +111,9 @@ DATACENTER_TREE = {
     },
     'Hyperscale AI': {
         'AI Training': {
-            'Standard': {'trace_type': 'synthetic_burst', 'default_pue': 1.18},
-            'Dense': {'trace_type': 'synthetic_burst', 'default_pue': 1.15},
-            'Extreme': {'trace_type': 'synthetic_burst', 'default_pue': 1.12},
+            'Standard':  {"power_model": "training", 'default_pue': 1.28},
+            'Dense':  {"power_model": "training", 'default_pue': 1.28},
+            'Extreme':  {"power_model": "training", 'default_pue': 1.28},
         },
         'AI Inference': {
             'Dense': {

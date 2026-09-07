@@ -56,7 +56,7 @@ def get_only_attribute1(data_disks):
     data_disks_attr1.to_csv("storage_files/data_disks_att1.csv", index=False)
 
 
-def get_load_sample_data(data, sample_size=100, random_state=42):
+def get_load_sample_data(data, sample_size=300, random_state=42):
 
     # randomly select 100 disks from the data set
     sample_disks = data.sample(n=sample_size, random_state=random_state)
@@ -99,39 +99,39 @@ def get_24hr_profile(load):
     # store the 24 hour profiles for each disk
     disk_profiles = []
 
-    # process each disk separately
     for disk_uid, disk_data in load.groupby("disk_uid"):
-
-        # sort the disk's measurements chronologically
         disk_data = disk_data.sort_values("datetime").copy()
 
-        # get first timestamp available for this disk
-        start_time = disk_data["datetime"].min()
-
+        # Lock start time to midnight of the first recorded day
+        start_time = disk_data["datetime"].min().floor("D")
         end_time = start_time + pd.Timedelta(hours=24)
 
-        # select only the requested 24 hour period
+        # Slice the 24-hour window
         day_data = disk_data[
-            (disk_data["datetime"] >= start_time) &
-            (disk_data["datetime"] < end_time)
+            (disk_data["datetime"] >= start_time) & (disk_data["datetime"] < end_time)
         ].copy()
 
-        # Only keep disks with a complete 24-hour period.
-        if len(day_data) == 288:
+        # Calculate interval index (0 to 287)
+        day_data["interval"] = (
+            (day_data["datetime"] - start_time).dt.total_seconds() // 300
+        ).astype(int)
 
-            # Keep only the information we need.
-            profile = day_data[
-                ["datetime", "total_IOPS"]
-            ].copy()
+        # Deduplicate in case raw trace has duplicate logs
+        day_data = day_data.drop_duplicates(subset=["interval"])
 
-            # Create a 5-minute interval number from 0 to 287.
-            profile["interval"] = range(288)
+        # --- EXPLICIT ZERO-FILLING LOGIC ---
+        # Create a complete master index of all 288 bins [0, 1, 2, ..., 287]
+        full_day_grid = pd.DataFrame({"interval": range(288)})
 
-            # Store the disk ID.
-            profile["disk_uid"] = disk_uid
+        # Merge actual disk data with the master 288-bin grid
+        profile = pd.merge(full_day_grid, day_data, on="interval", how="left")
 
-            # Add this disk's profile to our list.
-            disk_profiles.append(profile)
+        # Explicitly set total_IOPS to 0 for any missing interval
+        profile["total_IOPS"] = profile["total_IOPS"].fillna(0.0)
+        profile["disk_uid"] = disk_uid
+
+        # Keep the profile (now guaranteed to have 288 rows with explicit 0s)
+        disk_profiles.append(profile[["interval", "total_IOPS", "disk_uid"]])
 
     # Combine all complete disk profiles. [date time, total iops, interval, disk id]
     profiles = pd.concat(
@@ -156,20 +156,20 @@ def calculate_server_power(profile, selected_deployment, num_servers):
     df["utilization"] = (df["server_IOPS"] / spec["max_iops"])
 
     # Prevent utilization from exceeding 100%.
-    df["utilization"] = df["utilization"] = df["utilization"].clip(0.0, 1.0)
+    df["utilization"] = df["utilization"].clip(0.0, 1.0)
 
     # Linear server power model.
     p_idle = spec["p_idle"]
     p_dynamic = spec["p_peak"] - spec["p_idle"]
 
-    df["server_power_kW"] = (
+    df["server_power_kw"] = (
         p_idle +
         p_dynamic * df["utilization"]
     ) / 1000.0
 
     # Total power for all servers.
-    df["it_power_kW"] = (
-        df["server_power_kW"] * num_servers
+    df["it_power_kw"] = (
+        df["server_power_kw"] * num_servers
     )
 
     return df[
@@ -178,12 +178,12 @@ def calculate_server_power(profile, selected_deployment, num_servers):
             "avg_disk_IOPS",
             "utilization",
             "server_power_kw",
-            "power_kw"
+            "it_power_kw"
         ]
     ]
 
 
-def calculate_power_profile( selected_deployment, num_servers, sample_size=100, random_state=42):
+def calculate_power_profile( selected_deployment, num_servers, sample_size=300, random_state=42):
     """
     Complete storage workload-to-power pipeline.
     """

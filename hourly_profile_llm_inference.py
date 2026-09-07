@@ -4,12 +4,8 @@ from scipy.optimize import nnls
 from tqdm import tqdm
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
+import random
 
-INPUT_P33 = 564
-INPUT_P66 = 1960
-
-OUTPUT_P33 = 20
-OUTPUT_P66 = 60
 
 SERVER_CONFIGS = {
 
@@ -19,50 +15,53 @@ SERVER_CONFIGS = {
     }
 
 def _prepare_dataframe(data):
-
-    # prevents modifying existing data
     df = data.copy()
 
-    # formats timestamp to be read as time instead of a string
-    if not pd.api.types.is_datetime64_any_dtype(df['TIMESTAMP']):
-        # Parses the string timestamps into actual Pandas/NumPy datetime objects, which are necessary for time-based manipulation
-        df['TIMESTAMP'] = pd.to_datetime(df['TIMESTAMP'], format='ISO8601')
+    df["TIMESTAMP"] = pd.to_datetime(
+        df["TIMESTAMP"],
+        format="ISO8601"
+    )
+
     return df
 
-def generate_request_arrival_rate(data):
-    # ensure timestamps are parsed and set as the index
-    df = _prepare_dataframe(data)
+def decrease_dataset():
+    INPUT_FILE = "AzureLLMInferenceTrace_conv_1week.csv"
 
-    # 1. Groups the data into fixed 1-second intervals (bins) based on the datetime index
-    # 2. Counts the total number of rows (requests) that fall into each 1-second bin
-    # 3. Replaces NaN values with 0 for any 1-second interval that had zero requests
-    return df.resample('1s').size().fillna(0).rename('request_arrival_rate')
-
-
-def generate_input_token_rate(data):
-    df = _prepare_dataframe(data)
-    return (
-        df['ContextTokens'].resample('1s').sum().fillna(0).rename('input_token_rate')
+    # Only load the columns you actually need
+    df = pd.read_csv(
+        INPUT_FILE,
+        usecols=[
+            "TIMESTAMP",
+            "ContextTokens",
+            "GeneratedTokens"
+        ]
     )
 
+    df["TIMESTAMP"] = pd.to_datetime(
+    df["TIMESTAMP"],
+    format="ISO8601"
+)
 
-def generate_output_token_rate(data):
-    df = _prepare_dataframe(data)
-    return (
-        df['GeneratedTokens']
-        .resample('1s')
-        .sum()
-        .fillna(0)
-        .rename('output_token_rate')
-    )
+    start_time = df["TIMESTAMP"].min()
 
-def classify_length(value, p33, p66):
-    if value <= p33:
-        return "S"
-    elif value <= p66:
-        return "M"
-    else:
-        return 'L'
+    for day in range(7):
+
+        day_start = start_time + pd.Timedelta(days=day)
+        day_end = day_start + pd.Timedelta(days=1)
+
+        day_df = df[
+            (df["TIMESTAMP"] >= day_start) &
+            (df["TIMESTAMP"] < day_end)
+        ]
+
+        filename = f"AzureLLMInferenceTrace_day{day + 1}.csv"
+
+        day_df.to_csv(filename, index=False)
+
+        print(
+            f"Day {day + 1}: "
+            f"{len(day_df):,} rows → {filename}"
+        )
 
 
 def generate_nnls_L40s():
@@ -175,6 +174,7 @@ def generate_nnls_H200s():
 
     print(f"R_prefill = {R_prefill:.2f} tokens/sec")
     print(f"R_decode  = {R_decode:.2f} tokens/sec")
+
 
 def calculate_duration(data, selected_deployment):
     # gets r_prefill and r_decode for specific gpu
@@ -372,7 +372,19 @@ def aggregate_workload(
         "work_seconds": work_seconds,
     })
 
-def calculate_server_power(workload_profile, num_servers, selected_deployment):
+def generate_workload_profile(dataset,selected_deployment, bin_size_minutes=5):
+    dataset = dataset.copy()
+
+    processed_df = calculate_duration(dataset, selected_deployment)
+
+    workload_profile = aggregate_workload(
+        processed_df,
+        bin_size_minutes=bin_size_minutes
+    )
+
+    return workload_profile
+
+def calculate_server_power(workload_profile, num_servers, selected_deployment, target_peak_util = 0.8):
     """
     Converts GPU workload utilization into total GPU server IT power.
     """
@@ -380,72 +392,51 @@ def calculate_server_power(workload_profile, num_servers, selected_deployment):
     spec = SERVER_CONFIGS[selected_deployment]
     df = workload_profile.copy()
 
-    total_gpus = num_servers * spec["gpus_per_server"]
+    # find peak work seconds across the trace
+    peak_trace_work = df["work_seconds"].max()
 
-    bin_seconds = (df["bin_end"] - df["bin_start"]).dt.total_seconds()
+    # compute relative activity profile [0.0 to 1.0]
+    df["relative_activity"] = df["work_seconds"] / peak_trace_work if peak_trace_work > 0 else 0.0
 
-    max_capacity_seconds = (bin_seconds * total_gpus)
-
-    # Convert workload into GPU utilization
-    df["utilization"] = (df["work_seconds"] / max_capacity_seconds)
-
-    # Prevent utilization from going below 0% or above 100%
-    df["utilization"] = df["utilization"].clip(0.0, 1.0)
+    # scale utilization according to the cluster's target design peak
+    # target peak utilization defines the max expected workload capacity of a system under peak demand (80%)
+    df["utilization"] = (df["relative_activity"] * target_peak_util).clip(0.0, 1.0)
 
     # Linear power model
     p_idle = spec["P_idle"]
     p_dynamic = spec["P_peak"] - spec["P_idle"]
 
-    df["server_power_kw"] = (p_idle +
-            p_dynamic * df["utilization"]) / 1000.0
+    df["server_power_kw"] = (p_idle + p_dynamic * df["utilization"]) / 1000.0
 
     # Power of entire cluster
-    df["it_power_kw"] = (
-        num_servers
-        * df["server_power_kw"]
-    )
+    df["it_power_kw"] = (num_servers * df["server_power_kw"])
 
     return df[
         [
             "bin_start",
             "bin_end",
             "work_seconds",
+            "relative_activity",
             "utilization",
             "server_power_kw",
             "it_power_kw",
         ]
     ]
 
-def calculate_power_profile(selected_deployment, num_servers, bin_size_minutes=5):
+def calculate_power_profile(selected_deployment, num_servers, bin_size_minutes=5, target_peak_util=.8):
 
     # Load LLM workload
-    dataset = pd.read_csv("AzureLLMInferenceTrace_conv_1week.csv")
+    day = random.randint(1, 7)
+
+    filename = f"AzureLLMInferenceTrace_day{day}.csv"
+    dataset = pd.read_csv(filename)
 
     # Convert requests into execution intervals
-    processed_df = calculate_duration(dataset, selected_deployment)
+    workload_profile = generate_workload_profile(dataset, selected_deployment, bin_size_minutes=bin_size_minutes)
 
-    start_time = processed_df["start_time"].min()
+    power_profile = calculate_server_power(workload_profile, num_servers, selected_deployment, target_peak_util=target_peak_util)
 
-    end_time = (
-        start_time
-        + pd.Timedelta(hours=24)
-    )
-
-    # Keep requests that overlap the 24-hour window
-    processed_df = processed_df[
-        (processed_df["start_time"] < end_time)
-        &
-        (processed_df["end_time"] > start_time)
-    ].copy()
-
-    # Aggregate request workload
-    workload_profile = aggregate_workload(processed_df, bin_size_minutes=bin_size_minutes)
-
-    power_profile = calculate_server_power(workload_profile, num_servers, selected_deployment )
-
-    power_profile["timestamp"] = (
-        power_profile["bin_start"]
-    )
+    power_profile["timestamp"] = (power_profile["bin_start"])
 
     power_profile["hour"] = (
         (
@@ -460,11 +451,13 @@ def calculate_power_profile(selected_deployment, num_servers, bin_size_minutes=5
             "timestamp",
             "hour",
             "work_seconds",
+            "relative_activity",
             "utilization",
             "server_power_kw",
             "it_power_kw"
         ]
     ]
+
 
 def plot_24hr_power_profile(power_df, interval_num=5):
     """Plots 24-hour electrical power load (kW) and  utilization U(t)
@@ -543,6 +536,18 @@ def main():
     # print(f'\nPipeline completed! Results saved to {output_filename}')
 
     # plot_24hr_power_profile(power_profile, interval_num=5)
+    # decrease_dataset()
+
+    # Example execution: 10,000 servers in a Hyperscale Cloud DC
+    profile = calculate_power_profile(
+        selected_deployment="Dense",
+        num_servers=10000,
+        bin_size_minutes=5,
+        target_peak_util=0.85
+    )
+
+    print("\n--- Power Profile Sample (First 5 Bins) ---")
+    print(profile[["timestamp", "relative_activity", "utilization", "server_power_kw", "it_power_kw"]].head())
 
     calculate_power_profile("Standard", num_servers=10, bin_size_minutes=5)
 

@@ -1,16 +1,15 @@
-import numpy as np
 import pandas as pd
-import plotly.express as px
 import streamlit as st
 import plotly.graph_objects as go
 
+# These functions take a selected server deployment and number of servers, then return a time-series power profile.
 from hourly_profile_general_compute import calculate_power_profile as calculate_compute_power
 from hourly_profile_storage import calculate_power_profile as calculate_storage_power
 from hourly_profile_llm_inference import calculate_power_profile as calculate_llm_power
 from hourly_profile_data_analytics import calculate_power_profile as calculate_analytics_power
 from hourly_profile_llm_training import calculate_power_profile as calculate_llm_training_power
 
-
+# Maps the name stored in DATACENTER_TREE to the actual Python function responsible for calculating that workload's power profile.
 POWER_MODELS = {
     'compute': calculate_compute_power,
     'storage': calculate_storage_power,
@@ -18,21 +17,23 @@ POWER_MODELS = {
     'analytics': calculate_analytics_power,
     'training': calculate_llm_training_power
 }
+
 # ==========================================
 # 1. PAGE & STYLING CONFIGURATION
 # ==========================================
-st.set_page_config(
-    page_title='Data Center Power Simulator', page_icon='⚡', layout='wide'
-)
 
+# configures the streamlit application window
+st.set_page_config(page_title='Data Center Power Simulator', page_icon='⚡', layout='wide')
+
+# This dictionary defines the scenarios that users can select in the Streamlit sidebar.
 DATACENTER_TREE = {
     'Enterprise': {
         'General Purpose Compute': {
-            'Standard': {'power_model': 'compute', 'default_pue': 1.40},
-            'Dense': {'power_model': 'compute', 'default_pue': 1.35},
+            'Standard': {'power_model': 'compute', 'default_pue': 1.5},
+            'Dense': {'power_model': 'compute', 'default_pue': 1.5},
         },
         'Storage': {
-            'Standard': {'power_model': 'storage', 'default_pue': 1.35},
+            'Standard': {'power_model': 'storage', 'default_pue': 1.5},
             'Dense': {'power_model': 'storage', 'default_pue': 1.30},
         },
         'Data Analytics/Batch Processing': {
@@ -48,8 +49,8 @@ DATACENTER_TREE = {
     },
     'Co-location': {
         'General Purpose Compute': {
-            'Standard': {'power_model': 'compute', 'default_pue': 1.25},
-            'Dense': {'power_model': 'compute', 'default_pue': 1.22},
+            'Standard': {'power_model': 'compute', 'default_pue': 1.5},
+            'Dense': {'power_model': 'compute', 'default_pue': 1.5},
         },
         'Storage': {
             'Standard': {'power_model': 'storage', 'default_pue': 1.25},
@@ -66,10 +67,10 @@ DATACENTER_TREE = {
             "Standard": {
                     "power_model": "inference",
                     "default_pue": 1.35}},
-        'HPC': {
-            'Standard': {'trace_type': 'borg_compute', 'default_pue': 1.25},
-            'Dense': {'trace_type': 'borg_compute', 'default_pue': 1.22},
-        },
+        # 'HPC': {
+        #     'Standard': {'trace_type': 'borg_compute', 'default_pue': 1.25},
+        #     'Dense': {'trace_type': 'borg_compute', 'default_pue': 1.22},
+        # },
     },
     'Hyperscale Cloud': {
         'General Purpose Compute': {
@@ -103,11 +104,11 @@ DATACENTER_TREE = {
                     "power_model": "inference",
                     "default_pue": 1.35},
         },
-        'HPC': {
-            'Standard': {'trace_type': 'borg_compute', 'default_pue': 1.18},
-            'Dense': {'trace_type': 'borg_compute', 'default_pue': 1.15},
-            'Extreme': {'trace_type': 'borg_compute', 'default_pue': 1.12},
-        },
+        # 'HPC': {
+        #     'Standard': {'trace_type': 'borg_compute', 'default_pue': 1.18},
+        #     'Dense': {'trace_type': 'borg_compute', 'default_pue': 1.15},
+        #     'Extreme': {'trace_type': 'borg_compute', 'default_pue': 1.12},
+        # },
     },
     'Hyperscale AI': {
         'AI Training': {
@@ -141,15 +142,24 @@ DATACENTER_TREE = {
     },
 }
 
+# =============================================================================
+# SELECTED POWER MODEL
+# =============================================================================
 
 def calculate_selected_power(metadata, selected_deployment, num_servers):
+    """
+    The selected workload determines which power-model function is called.
+
+    """
     power_model = metadata["power_model"]
 
+     # Verify that the requested model exists.
     if power_model not in POWER_MODELS:
         raise ValueError(f"Unknown power model: {power_model}")
 
     calculate_power = POWER_MODELS[power_model]
 
+     # Run the selected workload-specific power calculation.
     return calculate_power(
         selected_deployment=selected_deployment,
         num_servers=num_servers,
@@ -160,6 +170,7 @@ st.sidebar.header('Facility Setup')
 # -------------------------------------------------------------
 # STEP 1: Select Data Center Type
 # -------------------------------------------------------------
+# The first selection determines which workload types are available in subsequent menus.
 dc_type = st.sidebar.selectbox(
     'Step 1: Data Center Type', options=list(DATACENTER_TREE.keys()), index=2
 )
@@ -175,12 +186,8 @@ selected_workload = st.sidebar.selectbox(
 # -------------------------------------------------------------
 # STEP 3: Select Deployment Variant (Standard / Dense / Extreme)
 # -------------------------------------------------------------
-deployment_options = list(
-    DATACENTER_TREE[dc_type][selected_workload].keys()
-)
-selected_deployment = st.sidebar.selectbox(
-    'Step 3: Deployment Type', options=deployment_options
-)
+deployment_options = list(DATACENTER_TREE[dc_type][selected_workload].keys())
+selected_deployment = st.sidebar.selectbox('Step 3: Deployment Type', options=deployment_options)
 
 # Extract scenario metadata & hardware tier mapping
 metadata = DATACENTER_TREE[dc_type][selected_workload][selected_deployment]
@@ -218,9 +225,9 @@ pue = st.sidebar.slider(
 # CALCULATE POWER
 # ============================================================
 
-
 if st.button("Calculate Power"):
 
+    # Select the appropriate workload-specific power model and calculate the IT power profile.
     power_profile = calculate_selected_power(
         metadata=metadata,
         selected_deployment=selected_deployment,
@@ -236,16 +243,15 @@ if "power_profile" not in st.session_state:
     st.stop()
 
 power_df = st.session_state["power_profile"].copy()
+
 # ============================================================
 # FACILITY POWER
 # ============================================================
 
 power_df = calculate_selected_power(metadata=metadata, selected_deployment=selected_deployment, num_servers=num_servers).copy()
 
-power_df["facility_power_kw"] = (
-    power_df["it_power_kw"] * pue
-)
-
+# Facility Power = IT Power × PUE
+power_df["facility_power_kw"] = (power_df["it_power_kw"] * pue)
 
 # ============================================================
 # BASIC TIME INFORMATION
@@ -254,21 +260,14 @@ power_df["facility_power_kw"] = (
 if "hour" not in power_df.columns:
 
     if "timestamp" in power_df.columns:
+        # Convert timestamps into pandas datetime objects.
+        timestamp = pd.to_datetime(power_df["timestamp"])
 
-        timestamp = pd.to_datetime(
-            power_df["timestamp"]
-        )
-
-        power_df["hour"] = (
-            timestamp - timestamp.min()
-        ).dt.total_seconds() / 3600
+        # Convert elapsed time into hours relative to the first timestamp.
+        power_df["hour"] = (timestamp - timestamp.min()).dt.total_seconds() / 3600
 
     else:
-
-        power_df["hour"] = (
-            range(len(power_df))
-        )
-
+        power_df["hour"] = (range(len(power_df)))
 
 # ============================================================
 # POWER STATISTICS
@@ -276,9 +275,7 @@ if "hour" not in power_df.columns:
 
 it_power = power_df["it_power_kw"]
 
-facility_power = power_df[
-    "facility_power_kw"
-]
+facility_power = power_df["facility_power_kw"]
 
 average_power = facility_power.mean()
 
@@ -288,34 +285,18 @@ minimum_power = facility_power.min()
 
 peak_index = facility_power.idxmax()
 
-peak_time = power_df.loc[
-    peak_index,
-    "hour"
-]
+peak_time = power_df.loc[peak_index,"hour"]
 
 # ============================================================
 # ENERGY
 # ============================================================
 
 if len(power_df) > 1:
-
-    interval_hours = (
-        power_df["hour"].iloc[1]
-        - power_df["hour"].iloc[0]
-    )
-
+    interval_hours = (power_df["hour"].iloc[1]- power_df["hour"].iloc[0])
 else:
-
     interval_hours = 5 / 60
 
-
-energy_kwh = (
-    facility_power.sum()
-    * interval_hours
-)
-
-
-
+energy_kwh = (facility_power.sum()* interval_hours)
 
 st.header("Data Center Power Simulation")
 
@@ -323,7 +304,6 @@ st.caption(
     f"{dc_type} • {selected_workload} • "
     f"{selected_deployment} • {num_servers:,} servers"
 )
-
 
 # ============================================================
 # KPI ROW
@@ -333,26 +313,13 @@ st.subheader("Power Summary")
 col1, col2, col3 = st.columns(3)
 
 with col1:
-
-    st.metric(
-        "Average Power",
-        f"{average_power:,.1f} kW"
-    )
+    st.metric("Average Power", f"{average_power:,.1f} kW")
 
 with col2:
-
-    st.metric(
-        "Peak Power",
-        f"{peak_power:,.1f} kW"
-    )
+    st.metric("Peak Power",f"{peak_power:,.1f} kW")
 
 with col3:
-
-    st.metric(
-        "Daily Energy",
-        f"{energy_kwh:,.2f} kWh"
-    )
-
+    st.metric("Daily Energy",f"{energy_kwh:,.2f} kWh")
 
 # ============================================================
 # SECOND KPI ROW
@@ -361,46 +328,26 @@ with col3:
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
-
-    st.metric(
-        "Minimum Power",
-        f"{minimum_power:,.1f} kW"
-    )
+    st.metric( "Minimum Power", f"{minimum_power:,.1f} kW")
 
 with col2:
-
-    st.metric(
-        "Peak Time",
-        f"{peak_time:.2f} hr"
-    )
+    st.metric("Peak Time", f"{peak_time:.2f} hr")
 
 with col3:
-
-    st.metric(
-        "PUE",
-        f"{pue:.2f}"
-    )
+    st.metric("PUE",f"{pue:.2f}")
 
 with col4:
-
-    st.metric(
-        "Servers",
-        f"{num_servers:,}"
-    )
+    st.metric( "Servers", f"{num_servers:,}")
 
 # ============================================================
 # POWER PROFILE
 # ============================================================
 
-st.subheader(
-    "24-Hour Power Profile"
-)
-
+st.subheader("24-Hour Power Profile")
 fig = go.Figure()
 
 
 # IT POWER
-
 fig.add_trace(
     go.Scatter(
         x=power_df["hour"],
@@ -421,7 +368,6 @@ fig.add_trace(
 
 
 # FACILITY POWER
-
 fig.add_trace(
     go.Scatter(
         x=power_df["hour"],
@@ -440,7 +386,7 @@ fig.add_trace(
     )
 )
 
-
+# Configure the appearance of the power chart.
 fig.update_layout(
     height=550,
     template="plotly_white",
@@ -456,7 +402,6 @@ fig.update_layout(
         xanchor="right",
         x=1,
     ),
-
     margin=dict(
         l=20,
         r=20,
@@ -465,7 +410,7 @@ fig.update_layout(
     ),
 )
 
-
+# Configure the x-axis to display a label every two hours.
 fig.update_xaxes(
     tickmode="array",
     tickvals=list(range(0, 25, 2)),
@@ -475,11 +420,8 @@ fig.update_xaxes(
     ],
 )
 
-
-st.plotly_chart(
-    fig,
-    use_container_width=True,
-)
+# Display the interactive Plotly chart in the Streamlit application.
+st.plotly_chart(fig, use_container_width=True,)
 
 # ============================================================
 # UTILIZATION

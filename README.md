@@ -1,4 +1,4 @@
-## Data Center Load Profiling
+# Data Center Load Profiling
 
 A Python-based framework for generating 24-hour data center electrical load profiles from realistic workload traces. The project models how different data center workloads translate into server utilization, IT power consumption, and total facility power. It supports multiple data center environments, hardware deployment tiers, workload types, and Power Usage Effectiveness (PUE) values. 
 The project also includes an interactive Streamlit-based data center power simulator for configuring and visualizing data center power demand.
@@ -17,10 +17,10 @@ Workload Trace -> Workload Activity -> Server Utilization -> Server IT Power -> 
 
 ### Data Center Types
 The simulator supports several facility categories:
-**Enterprise
-Co-location
-Hyperscale Cloud
-Hyperscale AI
+**Enterprise,
+Co-location,
+Hyperscale Cloud,
+Hyperscale AI,
 Edge**
 
 Each facility type supports different combinations of workloads and deployment configurations.
@@ -54,7 +54,7 @@ Workload-specific performance assumptions
 ---
 
 
-###  Power Modeling
+##  Power Modeling
 
 The project utilizes a simplified linear server power model to calculate electrical draw.
 
@@ -86,42 +86,24 @@ $$P_{\text{facility}} = P_{\text{IT}} \times \text{PUE}$$
 
 ---
 
-
-### Repository Structure
-```text
-DataCenterLoadProfiling/
-├── app.py
-├── hourly_profile_general_compute.py 
-├── hourly_profile_storage.py
-├── hourly_profile_data_analytics.py
-├── hourly_profile_llm_inference.py
-├── hourly_profile_llm_training.py
-├── general_compute_files/
-│   └── Workload data and intermediate files
-├── storage_files/
-│   └── Storage workload data
-├── data_analytics_files/
-│   └── Analytics workload data
-├── llm_inference_files/
-│   └── LLM inference traces
-├── ai_training_files/
-│   └── GPU training metrics and processed profiles
-└── .gitignore
-```
 ---
 
 ## Prerequisites & Installation
 
 1) Clone the repository
+ ```bash
    git clone https://github.com/megna10/DataCenterLoadProfiling.git
    cd DataCenterLoadProfiling
-   
+   ```
 2) Install all necessary dependencies for core computations, data processing, statistical fitting, and the `app.py` dashboard using `pip`:
 ```bash
 pip install numpy pandas scipy matplotlib streamlit
 ```
-
-3) After installing the required Python packages, run in the terminal:
+3) Some of the workload datasets used by this project are too large to store directly in this GitHub repository.
+   https://drive.google.com/drive/folders/1Sk8i1we6PU4hCl4R1xI8K6xjtVHc4A8N?usp=drive_link
+   Place the files under their respective workload file folder.
+   
+4) After installing the required Python packages, run in the terminal:
 
 ```bash
 streamlit run app.py
@@ -144,3 +126,25 @@ Calculate Power
 ```
 The application then produces an interactive 24-hour power profile.
 
+
+## Repository Structure
+```text
+DataCenterLoadProfiling/
+├── app.py
+├── hourly_profile_general_compute.py 
+├── hourly_profile_storage.py
+├── hourly_profile_data_analytics.py
+├── hourly_profile_llm_inference.py
+├── hourly_profile_llm_training.py
+├── general_compute_files/
+│   └── Workload data and intermediate files
+├── storage_files/
+│   └── Storage workload data
+├── data_analytics_files/
+│   └── Analytics workload data
+├── llm_inference_files/
+│   └── LLM inference traces
+├── ai_training_files/
+│   └── GPU training metrics and processed profiles
+└── .gitignore
+```

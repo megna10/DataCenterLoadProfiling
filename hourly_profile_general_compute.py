@@ -7,7 +7,8 @@ START_TIME = 0
 END_TIME = 86400#172800
 
 SERVER_CONFIGS = {"Standard": {"P_idle": 307, "P_peak": 1133, "num_cpu": 2, "total_max_cores": 64},
-                  "Dense": {"P_idle": 345, "P_peak": 1376, "num_cpu": 2, "total_max_cores": 128}
+                  "Dense": {"P_idle": 345, "P_peak": 1376, "num_cpu": 2, "total_max_cores": 128},
+                  "Extreme": {"P_idle": 383, "P_peak": 1591, "num_cpu": 2, "total_max_cores": 128},
                   }
 
 def get_target_vmid_table():

@@ -6,6 +6,22 @@ import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import random
 
+# =============================================================================
+# SERVER HARDWARE CONFIGURATION
+# =============================================================================
+# Defines the power characteristics of each server deployment type.
+#
+# P_idle:
+#     Power consumed by one server when it is idle, in Watts.
+#
+# P_peak:
+#     Power consumed by one server at maximum utilization, in Watts.
+#
+# gpus_per_server:
+#     Number of GPUs installed in each server.
+#
+# The current configurations all represent 8-GPU servers.
+# =============================================================================
 
 SERVER_CONFIGS = {
 
@@ -15,20 +31,47 @@ SERVER_CONFIGS = {
     }
 
 def load_machine_metric():
+    """
+    Load the raw machine-level GPU utilization dataset.
+
+    Returns
+    -------
+    pandas.DataFrame, Dataset containing GPU utilization measurements for individual
+        machines over time wihtout gaps in the dataset.
+    """
     return pd.read_csv("ai_training_files/metric_clean.csv")
 
 # filter 8-GPU machines
 
 def load_machine_spec():
+    """
+    This file identifies machines containing 8 GPUs.
+    """
     return pd.read_csv("ai_training_files/8_gpu_machine_ids.csv")
 
 
 def load_cluster_gpu_profile():
+    """
+    The resulting dataset contains the average GPU utilization of the
+    cluster for each 5-minute bin in a 24-hour period.
+    """
     return pd.read_csv(
         "ai_training_files/cluster_gpu_profile.csv"
     )
 
 def create_8gpu_metric_csv():
+    """
+    Load the GPU utilization data for machines with 8 GPUs.
+
+    The filtering process that originally created metric_8gpu.csv is
+    currently commented out below. The function instead loads the
+    already-created filtered CSV file.
+
+    Returns
+    -------
+    pandas.DataFrame
+        GPU utilization data containing only the selected 8-GPU machines.
+    """
     # df_metric = load_machine_metric()
     # df_machine = load_machine_spec()
 
@@ -52,20 +95,37 @@ def create_8gpu_metric_csv():
     return pd.read_csv("ai_training_files/metric_8gpu.csv")
 
 def create_gpu_profile_csv():
+    """
+    Create a representative 24-hour GPU utilization profile for the cluster.
+
+    Each machine is converted into a 288-point time series, where each
+    point represents one 5-minute interval.
+
+    The utilization profiles of all machines are then averaged together
+    to produce one representative cluster-level GPU profile.
+
+    The resulting profile is saved as:
+        ai_training_files/cluster_gpu_profile.csv
+    """
 
     df = pd.read_csv("ai_training_files/metric_8gpu.csv")
 
+    # this list will contain one 288 bin utilization profile per machine
     bin_all = []
 
     for mid in df["machine_id"].unique():
+        # converts this machine's raw measurments into a 24 hour 5 minute binned gpu util profile
         bins = extract_single_machine_gpu_utilizations(df, mid)
         bins.name = mid
         bin_all.append(bins)
 
+    # combines all machine profiles where rows represent 5 min bin and cols represent individual machines
     bin_df = pd.concat(bin_all, axis=1)
 
+    # avg util across all machines for each 5 min bin
     cluster_bin_avg = bin_df.mean(axis=1)
 
+    # "machine_gpu" contains avg gpu util across all machines
     gpu_profile = pd.DataFrame({
         "bin": range(288),
         "machine_gpu": cluster_bin_avg.values
@@ -79,15 +139,34 @@ def create_gpu_profile_csv():
     print("Saved cluster GPU profile")
 
 def extract_single_machine_gpu_utilizations(df, machine_id):
+    """
+    Convert one machine's raw GPU measurements into a 24-hour profile.
+
+    The output contains 288 five-minute bins.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame, GPU metric dataset containing measurements for multiple machines.
+
+    machine_id : Identifier of the machine to process.
+
+    Returns
+    -------
+    pandas.Series
+        A 288-element series containing the average GPU utilization for
+        each five-minute interval.
+    """
 
     df_m = df[df["machine_id"] == machine_id].copy()
 
     # Drop rows that don't have GPU data (must have at least 8 columns)
     df_m = df_m.dropna(axis=0, thresh=8)
 
+    # 288 bins are required in 24 hour period
     if df_m.empty:
         return pd.Series([0] * 288)
 
+    # ensures profile follows correct time order
     df_m = df_m.sort_values("start_time")
 
     # 24 hour window (relative time)
@@ -99,6 +178,7 @@ def extract_single_machine_gpu_utilizations(df, machine_id):
     if df_m.empty:
         return pd.Series([0] * 288)
 
+    # converts absolute timestamps into elapsed seconds relative to the beginning of the 24 hour window
     df_m["timestamp"] = df_m["start_time"] - start
 
     # gives us 288 bins cause 288 5 min bins in 24 hours
@@ -112,39 +192,6 @@ def extract_single_machine_gpu_utilizations(df, machine_id):
 
     return bins
 
-def load_training_8gpu():
-    df_8gpu = load_machine_spec()
-    training_ids = load_training_tasks()
-
-    # filters for machine_ids present in training_ids
-    common_8gpu_df = df_8gpu[df_8gpu["machine_id"].isin(training_ids)].copy()
-
-    # drop duplicates to only keep unique machine ids
-    common_8gpu_df = common_8gpu_df.drop_duplicates(subset=["machine_id"])
-
-    output_path = "ai_training_files/common_8gpu_machines.csv"
-
-    common_8gpu_df.to_csv(output_path, index=False)
-
-def compute_cluster_hourly():
-    df_8gpu_metric = create_8gpu_metric_csv()
-    bin_all = []
-
-    for mid in df_8gpu_metric["machine_id"].unique():
-        bins = extract_single_machine_gpu_utilizations(df_8gpu_metric, mid)
-        bin_all.append(bins)
-
-    # combine all machines into a dataframe
-    bin_df = pd.concat(bin_all, axis=1)
-
-    # cluster wider average gpu utilization
-    cluster_bin_avg = bin_df.mean(axis=1)
-
-
-    print("Cluster bins:", len(cluster_bin_avg))
-    print("Cluster average GPU:", cluster_bin_avg.mean())
-
-    return cluster_bin_avg
 
 def calculate_server_power(workload_profile, num_servers, selected_deployment):
     """

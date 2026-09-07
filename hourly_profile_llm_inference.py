@@ -1,11 +1,33 @@
 import pandas as pd
 import numpy as np
 from scipy.optimize import nnls
-from tqdm import tqdm
-import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import random
 
+# ---------------------------------------------------------------------------
+# SERVER CONFIGURATION
+# ---------------------------------------------------------------------------
+# Defines the electrical and performance characteristics of each server type.
+#
+# P_idle:
+#     Power consumed by one server when it is idle, in watts.
+#
+# P_peak:
+#     Maximum IT power consumed by one server, in watts.
+#
+# gpus_per_server:
+#     Number of GPUs contained in one server.
+#
+# R_prefill:
+#     Estimated token-processing rate for the prompt/input (prefill) phase,
+#     measured in tokens/second.
+#
+# R_decode:
+#     Estimated token-processing rate for the generated/output (decode) phase,
+#     measured in tokens/second.
+#
+# "inf" for R_decode means that decode time is intentionally treated as zero.
+# ---------------------------------------------------------------------------
 
 SERVER_CONFIGS = {
 
@@ -15,17 +37,45 @@ SERVER_CONFIGS = {
     }
 
 def _prepare_dataframe(data):
+    """
+    Create a copy of the input dataset and convert timestamps to datetime.
+
+    Parameters
+    ----------
+    data : pandas.DataFrame
+        Input workload dataset. It must contain a "TIMESTAMP" column.
+
+    Returns
+    -------
+    pandas.DataFrame
+        A copy of the input dataframe with "TIMESTAMP" converted to
+        pandas datetime objects.
+
+    """
     df = data.copy()
 
-    df["TIMESTAMP"] = pd.to_datetime(
-        df["TIMESTAMP"],
-        format="ISO8601"
-    )
-
+    # 2024-01-01T12:30:00
+    df["TIMESTAMP"] = pd.to_datetime(df["TIMESTAMP"], format="ISO8601")
     return df
 
+# ---------------------------------------------------------------------------
+# DATASET SPLITTING
+# ---------------------------------------------------------------------------
+
 def decrease_dataset():
-    INPUT_FILE = "AzureLLMInferenceTrace_conv_1week.csv"
+    """
+    Split the full LLM inference trace into seven separate daily CSV files.
+
+    The input dataset is expected to contain at least:
+        - TIMESTAMP
+        - ContextTokens
+        - GeneratedTokens
+
+    The function finds the earliest timestamp in the dataset and then creates
+    one CSV file for each of the following seven 24-hour periods.
+    """
+
+    INPUT_FILE = "llm_inference_files/llm_tokens_conv.csv"
 
     # Only load the columns you actually need
     df = pd.read_csv(
@@ -37,15 +87,14 @@ def decrease_dataset():
         ]
     )
 
-    df["TIMESTAMP"] = pd.to_datetime(
-    df["TIMESTAMP"],
-    format="ISO8601"
-)
+    df["TIMESTAMP"] = pd.to_datetime(df["TIMESTAMP"], format="ISO8601")
 
+    # Use the earliest timestamp as the beginning of Day 1.
     start_time = df["TIMESTAMP"].min()
 
     for day in range(7):
 
+        # Calculate the beginning and end of the current day.
         day_start = start_time + pd.Timedelta(days=day)
         day_end = day_start + pd.Timedelta(days=1)
 
@@ -54,7 +103,7 @@ def decrease_dataset():
             (df["TIMESTAMP"] < day_end)
         ]
 
-        filename = f"AzureLLMInferenceTrace_day{day + 1}.csv"
+        filename = f"llm_inference_files/AzureLLMInferenceTrace_day{day + 1}.csv"
 
         day_df.to_csv(filename, index=False)
 
@@ -63,8 +112,21 @@ def decrease_dataset():
             f"{len(day_df):,} rows → {filename}"
         )
 
+# ---------------------------------------------------------------------------
+# R_prefill * R_decode
+# ---------------------------------------------------------------------------
 
 def generate_nnls_L40s():
+    """
+    Estimate gpu's prefill and decode throughput using benchmark data.
+
+    The model assumes that total request processing time can be approximated
+    as:
+        Time = InputTokens / R_prefill
+             + OutputTokens / R_decode
+
+    The coefficients are estimated using Non-Negative Least Squares (NNLS).
+    """
     # [Input_Tokens, Output_Tokens, Throughput_total (tokens/sec)]
     benchmark_data = np.array([
     [128,    128,   1523.52],
@@ -79,7 +141,7 @@ def generate_nnls_L40s():
 ])
 
 
-    # Extract columns
+     # Extract the input-token, output-token, and throughput columns.
     I = benchmark_data[:, 0]
     O = benchmark_data[:, 1]
     TP_total = benchmark_data[:, 2]
@@ -100,7 +162,6 @@ def generate_nnls_L40s():
 
     print(f"R_prefill = {R_prefill:.2f} tokens/sec")
     print(f"R_decode  = {R_decode:.2f} tokens/sec")
-
 
 def generate_nnls_H100s():
     # [Input_Tokens, Output_Tokens, Throughput_total (tokens/sec)]
@@ -175,8 +236,35 @@ def generate_nnls_H200s():
     print(f"R_prefill = {R_prefill:.2f} tokens/sec")
     print(f"R_decode  = {R_decode:.2f} tokens/sec")
 
-
 def calculate_duration(data, selected_deployment):
+    """
+    Calculate how long each LLM request occupies the selected server.
+
+    Each request has two conceptual processing stages:
+
+        1. Prefill:
+           Processing the input/context tokens.
+
+        2. Decode:
+           Generating the output tokens.
+
+    Total request duration is: prefill time + decode time
+
+    Parameters
+    ----------
+    data : pandas.DataFrame
+        LLM request trace containing:
+        "TIMESTAMP", "ContextTokens", and "GeneratedTokens".
+
+    selected_deployment : str
+        Name of the server configuration in SERVER_CONFIGS.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Original request data plus start/end timestamps and processing
+        durations.
+    """
     # gets r_prefill and r_decode for specific gpu
     spec = SERVER_CONFIGS[selected_deployment]
 
@@ -192,12 +280,11 @@ def calculate_duration(data, selected_deployment):
 
     return df
 
+# ---------------------------------------------------------------------------
+# WORKLOAD AGGREGATION
+# ---------------------------------------------------------------------------
 
-def aggregate_workload(
-    processed_df,
-    bin_size_minutes=5,
-    chunk_size=500_000
-):
+def aggregate_workload(processed_df, bin_size_minutes=5, chunk_size=500_000):
     """
     Aggregates request intervals into fixed-size workload bins.
 
@@ -212,8 +299,23 @@ def aggregate_workload(
 
         10:00-10:05 = 180 seconds
         10:05-10:10 = 120 seconds
-    """
 
+    Parameters
+    ----------
+    processed_df : pandas.DataFrame containing "start_time" and "end_time".
+
+    bin_size_minutes : int, Width of each workload bin in minutes.
+
+    chunk_size : int, Number of requests processed at once.
+
+    Returns
+    -------
+    pandas.DataFrame
+        One row per time bin containing:
+            bin_start
+            bin_end
+            work_seconds
+    """
     bin_seconds = bin_size_minutes * 60
 
     # calculates beginning and end of the timeline
@@ -373,20 +475,47 @@ def aggregate_workload(
     })
 
 def generate_workload_profile(dataset,selected_deployment, bin_size_minutes=5):
+    """
+    Convert raw LLM requests into a time-binned workload profile.
+
+    This is the main workload-processing pipeline:
+
+        Raw requests -> Calculate request durations -> Aggregate request activity into time bins -> Return workload profile
+    """
     dataset = dataset.copy()
 
+    # calculate start/end times for every request
     processed_df = calculate_duration(dataset, selected_deployment)
 
-    workload_profile = aggregate_workload(
-        processed_df,
-        bin_size_minutes=bin_size_minutes
-    )
+    # aggregate all request intervals into fixed time bins
+    workload_profile = aggregate_workload(processed_df, bin_size_minutes=bin_size_minutes)
 
     return workload_profile
 
+# ---------------------------------------------------------------------------
+# SERVER POWER MODEL
+# ---------------------------------------------------------------------------
 def calculate_server_power(workload_profile, num_servers, selected_deployment, target_peak_util = 0.8):
     """
-    Converts GPU workload utilization into total GPU server IT power.
+    Convert workload activity into server and cluster IT power.The workload profile is first normalized relative to its peak.
+    That normalized activity is then scaled by the desired maximum utilization.
+
+    Parameters
+    ----------
+    workload_profile : pandas.DataFrame, Binned workload containing "work_seconds".
+
+    num_servers : int, Number of servers in the cluster.
+
+    selected_deployment : str, Server configuration to use.
+
+    target_peak_util : float
+        Maximum utilization represented by the observed workload peak.
+        For example, 0.8 means the trace peak corresponds to 80% utilization.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Workload and calculated server/cluster power metrics.
     """
 
     spec = SERVER_CONFIGS[selected_deployment]
@@ -428,7 +557,7 @@ def calculate_power_profile(selected_deployment, num_servers, bin_size_minutes=5
     # Load LLM workload
     day = random.randint(1, 7)
 
-    filename = f"AzureLLMInferenceTrace_day{day}.csv"
+    filename = f"llm_inference_files/AzureLLMInferenceTrace_day{day}.csv"
     dataset = pd.read_csv(filename)
 
     # Convert requests into execution intervals
@@ -459,97 +588,72 @@ def calculate_power_profile(selected_deployment, num_servers, bin_size_minutes=5
     ]
 
 
-def plot_24hr_power_profile(power_df, interval_num=5):
-    """Plots 24-hour electrical power load (kW) and  utilization U(t)
-    at 5-minute interval granularity.
-    """
-    # Ensure dataframe is reset to a clean integer index
-    df = power_df.reset_index(drop=True)
+# def plot_24hr_power_profile(power_df, interval_num=5):
+#     """Plots 24-hour electrical power load (kW) and  utilization U(t)
+#     at 5-minute interval granularity.
+#     """
+#     # Ensure dataframe is reset to a clean integer index
+#     df = power_df.reset_index(drop=True)
 
-    plt.figure(figsize=(12, 6))
+#     plt.figure(figsize=(12, 6))
 
-    # Plot the main Linear Power load curve
-    plt.plot(
-        df.index,
-        df['power_kw_linear'],
-        color='#1f77b4',
-        linewidth=2,
-        marker='o',
-        markersize=3,
-        label=f'{interval_num}-Min Linear Power Model',
-    )
+#     # Plot the main Linear Power load curve
+#     plt.plot(
+#         df.index,
+#         df['power_kw_linear'],
+#         color='#1f77b4',
+#         linewidth=2,
+#         marker='o',
+#         markersize=3,
+#         label=f'{interval_num}-Min Linear Power Model',
+#     )
 
-    # Format the X-Axis to display time ticks every 2 hours
-    total_bins = (24 * 60) // interval_num  # 288 bins for 5-min intervals
-    bins_per_hour = 60 // interval_num  # 12 bins per hour
-    tick_step = bins_per_hour * 2  # 24 bins per 2-hour step
+#     # Format the X-Axis to display time ticks every 2 hours
+#     total_bins = (24 * 60) // interval_num  # 288 bins for 5-min intervals
+#     bins_per_hour = 60 // interval_num  # 12 bins per hour
+#     tick_step = bins_per_hour * 2  # 24 bins per 2-hour step
 
-    tick_intervals = list(range(0, total_bins, tick_step))
-    tick_labels = [f'{(i * interval_num) // 60:02d}:00' for i in tick_intervals]
+#     tick_intervals = list(range(0, total_bins, tick_step))
+#     tick_labels = [f'{(i * interval_num) // 60:02d}:00' for i in tick_intervals]
 
-    plt.xticks(ticks=tick_intervals, labels=tick_labels, rotation=0)
-    plt.xlim(0, total_bins - 1)
+#     plt.xticks(ticks=tick_intervals, labels=tick_labels, rotation=0)
+#     plt.xlim(0, total_bins - 1)
 
-    # Axis labels & Title
-    plt.title(
-        f'24-Hour Azure LLM Cluster Power Load Profile ({interval_num}-Minute'
-        ' Resolution)',
-        fontsize=14,
-        pad=15,
-    )
-    plt.xlabel('Time of Day (HH:MM)', fontsize=11, labelpad=10)
-    plt.ylabel('Cluster Electrical Load (kW)', fontsize=11, labelpad=10)
+#     # Axis labels & Title
+#     plt.title(
+#         f'24-Hour Azure LLM Cluster Power Load Profile ({interval_num}-Minute'
+#         ' Resolution)',
+#         fontsize=14,
+#         pad=15,
+#     )
+#     plt.xlabel('Time of Day (HH:MM)', fontsize=11, labelpad=10)
+#     plt.ylabel('Cluster Electrical Load (kW)', fontsize=11, labelpad=10)
 
-    # Styling details
-    plt.grid(True, linestyle='--', alpha=0.5)
-    plt.legend(loc='upper right')
-    plt.tight_layout()
+#     # Styling details
+#     plt.grid(True, linestyle='--', alpha=0.5)
+#     plt.legend(loc='upper right')
+#     plt.tight_layout()
 
-    # Display the plot
-    plt.show()
+#     # Display the plot
+#     plt.show()
 
 
 def main():
     """Main execution block where workflow functions are called."""
-
-    # print('1. Loading dataset...')
-    # dataset = pd.read_csv('AzureLLMInferenceTrace_conv_1week.csv')
-
-    # print('2. Calculating durations for specified...')
-    # processed_df = calculate_duration(dataset, 'H100')
-
-    # print('3. Binning workload into 5-minute intervals...')
-    # binned_workload = aggregate_workload(
-    #     processed_df, bin_size_minutes=5, chunk_size=500_000
-    # )
-
-    # print('4. Computing 24-hour power load profile...(specify num servers)')
-    # power_profile = calculate_power_profile(
-    #     binned_workload, num_servers=100000, gpu_model='H200'
-    # )
-
-    # print('\n--- 24-Hour Power Load Profile (First 10 Bins) ---')
-    # print(power_profile[['work_seconds', 'utilization', 'power_kw_linear']].head(10))
-
-    # output_filename = 'azure_h100_power_profile.csv'
-    # power_profile.to_csv(output_filename)
-    # print(f'\nPipeline completed! Results saved to {output_filename}')
-
-    # plot_24hr_power_profile(power_profile, interval_num=5)
     # decrease_dataset()
 
     # Example execution: 10,000 servers in a Hyperscale Cloud DC
-    profile = calculate_power_profile(
-        selected_deployment="Dense",
-        num_servers=10000,
-        bin_size_minutes=5,
-        target_peak_util=0.85
-    )
+    # profile = calculate_power_profile(
+    #     selected_deployment="Dense",
+    #     num_servers=10000,
+    #     bin_size_minutes=5,
+    #     target_peak_util=0.85
+    # )
 
-    print("\n--- Power Profile Sample (First 5 Bins) ---")
-    print(profile[["timestamp", "relative_activity", "utilization", "server_power_kw", "it_power_kw"]].head())
+    # print("\n--- Power Profile Sample (First 5 Bins) ---")
+    # print(profile[["timestamp", "relative_activity", "utilization", "server_power_kw", "it_power_kw"]].head())
 
-    calculate_power_profile("Standard", num_servers=10, bin_size_minutes=5)
+    # calculate_power_profile("Standard", num_servers=10, bin_size_minutes=5)
 
 # --- RUN SCRIPT ---
 if __name__ == "__main__":

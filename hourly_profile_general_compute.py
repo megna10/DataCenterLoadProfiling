@@ -3,8 +3,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # time in seconds modeling one day
-START_TIME = 86400
-END_TIME = 172800
+START_TIME = 0
+END_TIME = 86400#172800
 
 SERVER_CONFIGS = {"Standard": {"P_idle": 307, "P_peak": 1133, "num_cpu": 2, "total_max_cores": 64},
                   "Dense": {"P_idle": 345, "P_peak": 1376, "num_cpu": 2, "total_max_cores": 128}
@@ -116,13 +116,36 @@ def get_vm_sections(max_core_count, num_groups):
     return sections
 
 
-def get_avg_cpu_utilizations(sections, start_time, end_time):
+def get_avg_cpu_utilizations(start_time, end_time, interval_seconds=300, num_vms=100,
+    random_seed=42):
     """
-    sections: list of dictionaries containing groups of vm's
+    Creates a complete CPU utilization profile for the requested
+    time period.
 
+    Default:
+        5-minute intervals
+        24 hours = 288 data points
     """
     # Read the CPU utilization data
     df = pd.read_csv("target_vm_rows_1_7.csv")
+
+    # Get unique VM IDs
+    vm_ids = df["vm_id"].unique()
+
+    # Randomly select 100 VMs
+    rng = np.random.default_rng(random_seed)
+
+    selected_vm_ids = rng.choice(
+        vm_ids,
+        size=min(num_vms, len(vm_ids)),
+        replace=False
+    )
+
+    print(f"Selected {len(selected_vm_ids)} VMs")
+
+    # Keep ALL measurements belonging to those VMs
+    df = df[df["vm_id"].isin(selected_vm_ids)].copy()
+
 
     # Only use timestamps within the requested range
     df = df[
@@ -130,79 +153,33 @@ def get_avg_cpu_utilizations(sections, start_time, end_time):
         (df["timestamp"] <= end_time)
     ]
 
-    # will contain dicts of avg cpus of each section at different timestamps
-    results = []
-
-    # Go through each unique timestamp in order
-    for timestamp in sorted(df["timestamp"].unique()):
-
-        # Get all VM data for this timestamp
-        timestamp_data = df[df["timestamp"] == timestamp]
-
-        # print(f"\nTimestamp: {timestamp}")
-
-        # creates a dict for this timestamp
-        timestamp_result = {
-            "timestamp": timestamp
-        }
-
-        # Go through each section
-        for section_num, section in enumerate(sections, start=1):
-
-            vm_ids = section["vm_ids"]
-
-            # Find the rows for the VMs in this section
-            section_data = timestamp_data[
-                timestamp_data["vm_id"].isin(vm_ids)
-            ]
-
-            # Calculate the average CPU utilization
-            if not section_data.empty:
-                section_avg_cpu = section_data["avg_cpu"].mean()
-            else:
-                section_avg_cpu = None
-
-            # Store the result
-            timestamp_result[f"section_{section_num}_avg_cpu"] = section_avg_cpu
-
-            # # Print result
-            # if section_avg_cpu is not None:
-            #     print(
-            #          f"Timestamp={timestamp}, "
-            #         f"  Section {section_num}: "
-            #         f"Avg CPU = {section_avg_cpu:.2f}, "
-            #         f"Total RAM = {section['total_ram']}"
-            #     )
-            # else:
-            #     print(
-            #         f"  Section {section_num}: "
-            #         f"No CPU data, "
-            #         f"Total RAM = {section['total_ram']}"
-            #     )
-
-        results.append(timestamp_result)
-
-    return pd.DataFrame(results)
-
-def get_overall_avg_cpu(section_results):
-    """
-    Calculate the average CPU utilization across all sections
-    for each timestamp.
-
-    section_results: DataFrame returned by get_avg_cpu_utilizations()
-
-    """
-    # Find all columns containing section CPU averages
-    section_columns = [
-        column for column in section_results.columns if column.startswith("section_") and column.endswith("_avg_cpu")
-    ]
-
-    # Calculate the average across sections for each timestamp
-    section_results["overall_avg_cpu"] = (
-        section_results[section_columns].mean(axis=1)
+    timestamps = np.arange(
+        start_time,
+        end_time,
+        interval_seconds
     )
 
-    return section_results[["timestamp", "overall_avg_cpu"]]
+    # Assign every observation to a 5-minute bucket
+    df["timestamp_bin"] = (
+        df["timestamp"] // interval_seconds
+    ) * interval_seconds
+
+    # Average CPU across all selected VMs/data points
+    cpu_profile = (
+        df.groupby("timestamp_bin")["avg_cpu"]
+        .mean()
+        .reindex(timestamps)
+        .fillna(0)
+        .reset_index()
+    )
+
+    cpu_profile.columns = [
+        "timestamp",
+        "overall_avg_cpu"
+    ]
+
+    return cpu_profile
+
 
 def calculate_server_power(cpu_profile, num_servers, deployment):
     """
@@ -230,16 +207,29 @@ def calculate_server_power(cpu_profile, num_servers, deployment):
     return df[["timestamp", "utilization", "server_power_kw", "it_power_kw"]]
 
 def calculate_power_profile(selected_deployment, num_servers):
-    deployment = SERVER_CONFIGS[selected_deployment]
 
-    # get vm workload
-    sects_of_ids = get_vm_sections(deployment["total_max_cores"], 20)
+    cpu_profile = get_avg_cpu_utilizations( START_TIME, END_TIME, 300)
 
-    cpu_profile = get_avg_cpu_utilizations(sects_of_ids, START_TIME, END_TIME)
-    # aggregate sections
-    cpu_profile = get_overall_avg_cpu(cpu_profile)
+    expected_timestamps = np.arange(START_TIME, END_TIME, 300)
 
-    power_profile = calculate_server_power(cpu_profile, num_servers, selected_deployment)
+    full_profile = pd.DataFrame({
+        "timestamp": expected_timestamps
+    })
+
+    # Match actual CPU measurements onto the full timeline
+    full_profile = full_profile.merge(
+        cpu_profile,
+        on="timestamp",
+        how="left"
+    )
+
+    # No workload = 0% utilization
+    full_profile["overall_avg_cpu"] = (
+        full_profile["overall_avg_cpu"]
+        .fillna(0)
+    )
+
+    power_profile = calculate_server_power(full_profile, num_servers, selected_deployment)
 
     result = power_profile.copy()
 
@@ -327,11 +317,45 @@ def main():
     # plot_profiles(profile_df, time_interval)
 
     # sects_of_ids = get_vm_sections(64, 10)
-    # df = get_avg_cpu_utilizations(sects_of_ids, 0, 86400 )
+    # df = get_avg_cpu_utilizations(sects_of_ids, 86400 , 86400 * 2 )
     # plot_overall_cpu_util_sections(get_overall_avg_cpu(df))
 
-    calculate_power_profile("Standard", 10)
+    power_profile = calculate_power_profile(
+        selected_deployment="Standard",
+        num_servers=10
+    )
 
-# --- RUN SCRIPT ---
+    print("\n========== POWER PROFILE CHECK ==========")
+
+    print("\nFirst 10 rows:")
+    print(power_profile.head(10))
+
+    print("\nLast 10 rows:")
+    print(power_profile.tail(10))
+
+    print("\nNumber of rows:")
+    print(len(power_profile))
+
+    print("\nHour range:")
+    print(
+        power_profile["hour"].min(),
+        "to",
+        power_profile["hour"].max()
+    )
+
+    print("\nUtilization range:")
+    print(
+        power_profile["utilization"].min(),
+        "to",
+        power_profile["utilization"].max()
+    )
+
+    print("\nPower range:")
+    print(
+        power_profile["it_power_kw"].min(),
+        "to",
+        power_profile["it_power_kw"].max(),
+    )
+
 if __name__ == "__main__":
     main()

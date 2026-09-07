@@ -41,15 +41,15 @@ def read_data():
     "vm_memory"
     ]
 
-    df = pd.read_csv("disk_subscript_info", header=None, names=columns)
+    df = pd.read_csv("storage_files/disk_subscript_info", header=None, names=columns)
 
-    df.to_csv("disk_subscription_info2.csv", index=False)
+    df.to_csv("storage_files/disk_subscription_info2.csv", index=False)
 
     print(df.head())
 
 def get_only_data_disks(df):
     data_disks = df[df["disk_type"] == 0]
-    data_disks.to_csv("data_disks.csv", index=False)
+    data_disks.to_csv("storage_files/data_disks.csv", index=False)
 
 def get_only_attribute1(data_disks):
     data_disks_attr1 = data_disks[data_disks["disk_attr"] == 1]
@@ -58,7 +58,7 @@ def get_only_attribute1(data_disks):
 
 def get_load_sample_data(data, sample_size=300, random_state=42):
 
-    # randomly select 100 disks from the data set
+    # randomly select 300 disks from the filtered disk attr dataset
     sample_disks = data.sample(n=sample_size, random_state=random_state)
     load_dir = "disk_load_data"
 
@@ -84,7 +84,7 @@ def get_load_sample_data(data, sample_size=300, random_state=42):
 
         all_loads.append(load)
 
-    # Combine all 100 individual DataFrames into one large DataFrame.
+    # Combine all 300 individual DataFrames into one large DataFrame.
     all_loads = pd.concat(all_loads, ignore_index=True)
     return all_loads
 
@@ -271,30 +271,6 @@ def plot_profile(profile):
 
 def main():
     """Main execution block where workflow functions are called."""
-    # df =  pd.read_csv('disk_subscription_info2.csv')
-
-    # shows how much of each value appears
-    # print(df["disk_attr"].value_counts())
-    # print(df["disk_type"].value_counts())
-
-    # capacity distribution for each disk_attr
-    # print(df.groupby("disk_attr")["disk_capacity"].value_counts())
-
-    # # show what disk types occur in disk attributes
-    # print(df.groupby("disk_attr")["disk_type"].value_counts())
-
-    # data_disks_attr1 = pd.read_csv("storage_files/data_disks_att1.csv")
-    # load = get_load_sample_data(data_disks_attr1, 100, 42)
-
-    # # create a 24 hour, 5 min profile for each disk
-    # profiles = get_24hr_profile(load)
-
-    # # Create the representative workload across the disks.
-    # representative = create_representative_profile(profiles)
-    # pro = calculate_power_profile(representative, 'Standard_Storage', 10)
-
-    # plot_profile(pro)
-
     calculate_power_profile("Standard", 10, 100, 42 )
 
 

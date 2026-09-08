@@ -8,9 +8,9 @@ from hourly_profile_storage import calculate_power_profile as calculate_storage_
 from hourly_profile_llm_inference import calculate_power_profile as calculate_llm_power
 from hourly_profile_data_analytics import calculate_power_profile as calculate_analytics_power
 from hourly_profile_llm_training import calculate_power_profile as calculate_llm_training_power
-from download_data import download_data
+# from download_data import download_data
 
-download_data()
+# download_data()
 
 # Maps the name stored in DATACENTER_TREE to the actual Python function responsible for calculating that workload's power profile.
 POWER_MODELS = {
@@ -198,7 +198,6 @@ metadata = DATACENTER_TREE[dc_type][selected_workload][selected_deployment]
 # -------------------------------------------------------------
 # STEP 4: User Inputs Number of Servers
 # -------------------------------------------------------------
-st.sidebar.markdown('---')
 
 num_servers = st.sidebar.number_input(
     'Step 4: Number of Servers (N)',
@@ -227,21 +226,78 @@ pue = st.sidebar.slider(
 # ============================================================
 # CALCULATE POWER
 # ============================================================
+st.markdown("<br>", unsafe_allow_html=True)
+st.markdown(
+    """
+    <style>
+    div.stButton > button[kind="primary"] {
+        background-color: #2563EB;
+        color: white;
+        border: none;
+        border-radius: 8px;
+        height: 3rem;
+        font-size: 1rem;
+        font-weight: 600;
+        transition: all 0.2s ease;
+    }
 
-if st.button("Calculate Power"):
+    div.stButton > button[kind="primary"]:hover {
+        background-color: #1D4ED8;
+        color: white;
+        border: none;
+        transform: translateY(-1px);
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
-    # Select the appropriate workload-specific power model and calculate the IT power profile.
-    power_profile = calculate_selected_power(
-        metadata=metadata,
-        selected_deployment=selected_deployment,
-        num_servers=num_servers,
-    )
+if st.sidebar.button(
+    "⚡ Run Simulation",
+    type="primary",
+    use_container_width=True
+):
+    with st.spinner("Running simulation..."):
+        power_profile = calculate_selected_power(
+            metadata=metadata,
+            selected_deployment=selected_deployment,
+            num_servers=num_servers,
+        )
 
-    st.session_state["power_profile"] = power_profile
+        st.session_state["power_profile"] = power_profile
+
 
 if "power_profile" not in st.session_state:
 
-    st.info("Configure the data center and click Calculate Power.")
+    st.title("Data Center Power Simulator")
+
+    st.markdown(
+        "Configure a scenario in the sidebar to generate a 24-hour "
+        "power profile and analyze facility energy consumption."
+    )
+
+    st.divider()
+
+    col1, col2= st.columns([2,1])
+
+    with col1:
+        st.info(
+            """
+            **Simulation outputs**
+
+            📈 24-hour power profile
+
+            📊 Server utilization
+
+            ⚡ Peak & average power
+
+            🔌 Facility overhead
+
+            🔋 Energy consumption
+            """
+        )
+
+    st.divider()
 
     st.stop()
 
@@ -290,6 +346,12 @@ peak_index = facility_power.idxmax()
 
 peak_time = power_df.loc[peak_index,"hour"]
 
+average_it = it_power.mean()
+average_facility = facility_power.mean()
+
+overhead = average_facility - average_it
+overhead_percent = overhead / average_facility * 100
+
 # ============================================================
 # ENERGY
 # ============================================================
@@ -301,19 +363,56 @@ else:
 
 energy_kwh = (facility_power.sum()* interval_hours)
 
-st.header("Data Center Power Simulation")
 
-st.caption(
-    f"{dc_type} • {selected_workload} • "
-    f"{selected_deployment} • {num_servers:,} servers"
+header_col1, header_col2 = st.columns([5, 1])
+
+with header_col1:
+    st.title("Data Center Power Simulator")
+    st.caption(
+        f"{dc_type}  •  {selected_workload}  •  "
+        f"{selected_deployment}  •  {num_servers:,} servers"
+    )
+
+st.markdown(
+    """
+    <style>
+    div.stDownloadButton > button {
+        background-color: #555555;
+        color: white;
+        border: none;
+        border-radius: 10px;
+        padding: 0.5rem 1rem;
+        font-weight: 600;
+    }
+
+    div.stDownloadButton > button:hover {
+        background-color: #a9a9a9;
+        color: white;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
 )
+
+with header_col2:
+    csv = power_df.to_csv(index=False)
+
+    st.download_button(
+        label="⬇️ Export CSV",
+        data=csv,
+        file_name="power_profile.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )
+
+st.divider()
 
 # ============================================================
 # KPI ROW
 # ============================================================
 st.subheader("Power Summary")
 
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 
 with col1:
     st.metric("Average Power", f"{average_power:,.1f} kW")
@@ -322,7 +421,11 @@ with col2:
     st.metric("Peak Power",f"{peak_power:,.1f} kW")
 
 with col3:
-    st.metric("Daily Energy",f"{energy_kwh:,.2f} kWh")
+    st.metric("Energy", f"{energy_kwh / 1000:,.2f} MWh")
+
+with col4:
+    st.metric("Facility Overhead",f"{overhead_percent:.1f}%")
+
 
 # ============================================================
 # SECOND KPI ROW
@@ -342,6 +445,9 @@ with col3:
 with col4:
     st.metric( "Servers", f"{num_servers:,}")
 
+st.markdown("<br>", unsafe_allow_html=True)
+
+st.divider()
 # ============================================================
 # POWER PROFILE
 # ============================================================
@@ -426,6 +532,9 @@ fig.update_xaxes(
 # Display the interactive Plotly chart in the Streamlit application.
 st.plotly_chart(fig, use_container_width=True,)
 
+st.markdown("<br>", unsafe_allow_html=True)
+st.divider()
+
 # ============================================================
 # UTILIZATION
 # ============================================================
@@ -473,6 +582,7 @@ if "utilization" in power_df.columns:
         use_container_width=True,
     )
 
+st.divider()
 # ============================================================
 # CONFIGURATION
 # ============================================================

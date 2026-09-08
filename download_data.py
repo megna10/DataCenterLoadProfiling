@@ -30,7 +30,6 @@ def download_data():
         url=DRIVE_FOLDER_URL,
         output=str(PROJECT_ROOT),
         quiet=False,
-        remaining_ok=True,
     )
 
     if not CHECK_FILE.exists():

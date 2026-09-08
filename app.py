@@ -8,6 +8,9 @@ from hourly_profile_storage import calculate_power_profile as calculate_storage_
 from hourly_profile_llm_inference import calculate_power_profile as calculate_llm_power
 from hourly_profile_data_analytics import calculate_power_profile as calculate_analytics_power
 from hourly_profile_llm_training import calculate_power_profile as calculate_llm_training_power
+from download_data import download_data
+
+download_data()
 
 # Maps the name stored in DATACENTER_TREE to the actual Python function responsible for calculating that workload's power profile.
 POWER_MODELS = {

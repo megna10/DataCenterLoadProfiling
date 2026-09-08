@@ -95,36 +95,41 @@ $$P_{\text{facility}} = P_{\text{IT}} \times \text{PUE}$$
    git clone https://github.com/megna10/DataCenterLoadProfiling.git
    cd DataCenterLoadProfiling
    ```
+2) Create a virtual env.
+   **Windows**
+   ```bash
+   python -m venv venv
+   .\venv\Scripts\Activate.ps1
+   ```
+   If PowerShell does not allow the activation script to run, you can instead use:
+
+   ```bash
+   venv\Scripts\activate
+   ```
+   **macOS / Linux**
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate
+   ```
+
 2) Install all necessary dependencies for core computations, data processing, statistical fitting, and the `app.py` dashboard using `pip`:
-```bash
-pip install numpy pandas scipy matplotlib streamlit
-```
-3) Some of the workload datasets used by this project are too large to store directly in this GitHub repository.
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+## Running the Application
+
+### Run with Local Data
+1) Some of the workload datasets used by this project are too large to store directly in this GitHub repository.
    https://drive.google.com/drive/folders/1Sk8i1we6PU4hCl4R1xI8K6xjtVHc4A8N?usp=drive_link
    Place the files under their respective workload file folder.
    
-4) After installing the required Python packages, run in the terminal:
+2) After installing the required Python packages, run in the terminal:
 
-```bash
-streamlit run app.py
-```
+   ```bash
+   streamlit run app.py
+   ```
 The application will open in a browser. 
-The user can configure:
-
-```bash
-Data Center Type
-        ↓
-Workload
-        ↓
-Deployment Tier
-        ↓
-Number of Servers
-        ↓
-PUE
-        ↓
-Calculate Power
-```
-The application then produces an interactive 24-hour power profile.
 
 
 ## Repository Structure

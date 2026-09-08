@@ -5,6 +5,7 @@ from tqdm import tqdm
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import random
+import os
 
 # =============================================================================
 # SERVER HARDWARE CONFIGURATION
@@ -49,16 +50,6 @@ def load_machine_spec():
     """
     return pd.read_csv("ai_training_files/8_gpu_machine_ids.csv")
 
-
-def load_cluster_gpu_profile():
-    """
-    The resulting dataset contains the average GPU utilization of the
-    cluster for each 5-minute bin in a 24-hour period.
-    """
-    return pd.read_csv(
-        "ai_training_files/cluster_gpu_profile.csv"
-    )
-
 def create_8gpu_metric_csv():
     """
     Load the GPU utilization data for machines with 8 GPUs.
@@ -94,51 +85,76 @@ def create_8gpu_metric_csv():
 
     return pd.read_csv("ai_training_files/metric_8gpu.csv")
 
-def create_gpu_profile_csv():
+def load_random_gpu_profile_csv(profile_dir="ai_training_files/daily_power_profiles"):
     """
-    Create a representative 24-hour GPU utilization profile for the cluster.
-
-    Each machine is converted into a 288-point time series, where each
-    point represents one 5-minute interval.
-
-    The utilization profiles of all machines are then averaged together
-    to produce one representative cluster-level GPU profile.
-
-    The resulting profile is saved as:
-        ai_training_files/cluster_gpu_profile.csv
+    Randomly selects and loads one of the pre-exported daily cluster GPU profile CSVs.
     """
+    if not os.path.exists(profile_dir):
+        raise FileNotFoundError(f"Directory '{profile_dir}' does not exist. Run export_all_gpu_profile_csvs() first.")
 
-    df = pd.read_csv("ai_training_files/metric_8gpu.csv")
+    files = [f for f in os.listdir(profile_dir) if f.startswith("cluster_gpu_profile_day") and f.endswith(".csv")]
 
-    # this list will contain one 288 bin utilization profile per machine
-    bin_all = []
+    if not files:
+        raise FileNotFoundError(f"No daily GPU profile CSVs found in {profile_dir}.")
 
-    for mid in df["machine_id"].unique():
-        # converts this machine's raw measurments into a 24 hour 5 minute binned gpu util profile
-        bins = extract_single_machine_gpu_utilizations(df, mid)
-        bins.name = mid
-        bin_all.append(bins)
+    selected_file = random.choice(files)
+    file_path = os.path.join(profile_dir, selected_file)
 
-    # combines all machine profiles where rows represent 5 min bin and cols represent individual machines
-    bin_df = pd.concat(bin_all, axis=1)
+    print(f"Loaded randomly selected GPU profile: {selected_file}")
+    return pd.read_csv(file_path)
 
-    # avg util across all machines for each 5 min bin
-    cluster_bin_avg = bin_df.mean(axis=1)
+def export_all_ai_training_daily_profiles(
+    output_dir="ai_training_files/daily_power_profiles"
+):
+    """
+    Reads metric_8gpu.csv, splits the timeline into distinct 24-hour days,
+    computes power profiles for each day, and saves them to individual CSV files.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    csv_path = "ai_training_files/metric_8gpu.csv"
 
-    # "machine_gpu" contains avg gpu util across all machines
-    gpu_profile = pd.DataFrame({
-        "bin": range(288),
-        "machine_gpu": cluster_bin_avg.values
-    })
+    if not os.path.exists(csv_path):
+        raise FileNotFoundError(f"Could not find input file: {csv_path}")
 
-    gpu_profile.to_csv(
-        "ai_training_files/cluster_gpu_profile.csv",
-        index=False
-    )
+    df = pd.read_csv(csv_path)
 
-    print("Saved cluster GPU profile")
+    # Determine total 24-hour days available in the dataset
+    min_time = df["start_time"].min()
+    max_time = df["start_time"].max()
+    total_seconds = max_time - min_time
+    total_days = max(1, int(total_seconds // (24 * 3600)))
 
-def extract_single_machine_gpu_utilizations(df, machine_id):
+    print(f"Detected {total_days} day(s) in AI Training trace. Exporting profiles...")
+
+    exported_files = []
+
+    for day in range(total_days):
+        # 1. Extract 24-hour GPU utilization series for all machines on this specific day
+        bin_all = []
+        for mid in df["machine_id"].unique():
+            bins = extract_single_machine_gpu_utilizations(df, mid, day_offset=day)
+            bins.name = mid
+            bin_all.append(bins)
+
+        bin_df = pd.concat(bin_all, axis=1)
+        cluster_bin_avg = bin_df.mean(axis=1)
+
+        # Match your exact output format
+        gpu_profile = pd.DataFrame({
+            "bin": range(288),
+            "machine_gpu": cluster_bin_avg.values
+        })
+
+        output_filename = f"cluster_gpu_profile_day{day + 1}.csv"
+        file_path = os.path.join(output_dir, output_filename)
+        gpu_profile.to_csv(file_path, index=False)
+
+        print(f"  ✓ Saved Day {day + 1} cluster GPU profile -> {file_path}")
+        exported_files.append(file_path)
+
+    return exported_files
+
+def extract_single_machine_gpu_utilizations(df, machine_id, day_offset=0):
     """
     Convert one machine's raw GPU measurements into a 24-hour profile.
 
@@ -170,16 +186,17 @@ def extract_single_machine_gpu_utilizations(df, machine_id):
     df_m = df_m.sort_values("start_time")
 
     # 24 hour window (relative time)
-    start = df_m["start_time"].min()
-    end = start + 24 * 3600
+    base_start_time = df_m["start_time"].min()
+    day_start_time = base_start_time + (day_offset * 24 * 3600)
+    day_end_time = day_start_time + (24 * 3600)
 
-    df_m = df_m[(df_m["start_time"] >= start) & (df_m["start_time"] < end)].copy()
+    df_m = df_m[(df_m["start_time"] >= day_start_time) & (df_m["start_time"] < day_end_time)].copy()
 
     if df_m.empty:
         return pd.Series([0] * 288)
 
     # converts absolute timestamps into elapsed seconds relative to the beginning of the 24 hour window
-    df_m["timestamp"] = df_m["start_time"] - start
+    df_m["timestamp"] = df_m["start_time"] - day_start_time
 
     # gives us 288 bins cause 288 5 min bins in 24 hours
     df_m["bin"] = df_m["timestamp"] // 300
@@ -228,7 +245,7 @@ def calculate_server_power(workload_profile, num_servers, selected_deployment):
 
 def calculate_power_profile(selected_deployment, num_servers):
 
-    cluster_bin_avg = load_cluster_gpu_profile()
+    cluster_bin_avg = load_random_gpu_profile_csv()
 
     power_profile = calculate_server_power(
         cluster_bin_avg,
@@ -263,6 +280,8 @@ def main():
 
     # print(power_profile.head())
     # create_gpu_profile_csv()
+
+    # export_all_ai_training_daily_profiles()
 
 # --- RUN SCRIPT ---
 
